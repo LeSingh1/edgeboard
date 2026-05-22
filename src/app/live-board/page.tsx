@@ -10,6 +10,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import type { Prop, LeagueSummary } from "@/lib/types";
 import type { LiveGameStat } from "@/lib/liveStats";
 import { matchPropToLive } from "@/lib/liveStats";
+import { groupByFamily, familyKeyOf, primaryVariant, type VariantSet } from "@/lib/variantGroups";
 import { cn } from "@/lib/cn";
 
 const SORT_OPTIONS = [
@@ -156,13 +157,24 @@ export default function LiveBoardPage() {
     }
   }, [availableDates, dateFilter]);
 
+  // Family map — groups demon/std/goblin variants for the same (player, statType).
+  // Recomputed only when the props payload changes; cheap (a single linear scan).
+  const familyMap = useMemo(() => {
+    if (!data) return new Map<string, VariantSet>();
+    return groupByFamily(data.props);
+  }, [data]);
+
+  // Family-deduplicated, filtered, sorted list — what actually renders to the grid.
+  // The card knows about all variants in the family and shows a swap picker when >1.
   const filteredProps = useMemo(() => {
     if (!data) return [];
-    const filtered = data.props.filter((p) => {
-      if (sport !== "ALL" && p.sport !== sport) return false;
+    const seen = new Set<string>();
+    const collected: Prop[] = [];
+    for (const p of data.props) {
+      if (sport !== "ALL" && p.sport !== sport) continue;
       if (dateFilter !== "all" && p.gameTime) {
         const d = new Date(p.gameTime);
-        if (!isNaN(d.getTime()) && dateKey(d) !== dateFilter) return false;
+        if (!isNaN(d.getTime()) && dateKey(d) !== dateFilter) continue;
       }
       if (search) {
         const q = search.toLowerCase();
@@ -171,26 +183,34 @@ export default function LiveBoardPage() {
           !p.statType.toLowerCase().includes(q) &&
           !p.team.toLowerCase().includes(q)
         ) {
-          return false;
+          continue;
         }
       }
-      return true;
-    });
-    return [...filtered].sort((a, b) => {
+      // Dedupe by family — only render the primary variant; the card's VariantTabs handles swap
+      const fk = familyKeyOf(p);
+      if (seen.has(fk)) continue;
+      seen.add(fk);
+      const vs = familyMap.get(fk);
+      collected.push(vs ? (primaryVariant(vs) ?? p) : p);
+    }
+    return [...collected].sort((a, b) => {
       if (sort === "line") return (b.line ?? 0) - (a.line ?? 0);
       if (sort === "demons") {
-        const da = a.oddsType === "demon" ? 0 : a.oddsType === "standard" ? 1 : 2;
-        const db = b.oddsType === "demon" ? 0 : b.oddsType === "standard" ? 1 : 2;
-        return da - db;
+        // For each family, surface those with a demon variant available first
+        const da = familyMap.get(familyKeyOf(a))?.demon ? 0 : 1;
+        const db = familyMap.get(familyKeyOf(b))?.demon ? 0 : 1;
+        if (da !== db) return da - db;
+        return new Date(a.gameTime).getTime() - new Date(b.gameTime).getTime();
       }
       if (sort === "goblins") {
-        const ga = a.oddsType === "goblin" ? 0 : a.oddsType === "standard" ? 1 : 2;
-        const gb = b.oddsType === "goblin" ? 0 : b.oddsType === "standard" ? 1 : 2;
-        return ga - gb;
+        const ga = familyMap.get(familyKeyOf(a))?.goblin ? 0 : 1;
+        const gb = familyMap.get(familyKeyOf(b))?.goblin ? 0 : 1;
+        if (ga !== gb) return ga - gb;
+        return new Date(a.gameTime).getTime() - new Date(b.gameTime).getTime();
       }
       return new Date(a.gameTime).getTime() - new Date(b.gameTime).getTime();
     });
-  }, [data, sport, sort, search, dateFilter]);
+  }, [data, sport, sort, search, dateFilter, familyMap]);
 
   // Reset visibility when filters change — deferred to avoid cascade-render warning
   useEffect(() => {
@@ -238,10 +258,9 @@ export default function LiveBoardPage() {
                   : `${filteredProps.length.toLocaleString()} props live · last refresh ${fetchedAtLabel}`}
             </p>
             <p className="text-white/40 text-xs mt-1 uppercase tracking-widest font-bold">
-              Personal analytics · not affiliated with PrizePicks · probabilities implied from{" "}
-              <span className="text-[#FF6B35]">demon</span> /{" "}
-              <span className="text-[#FFE600]">std</span> /{" "}
-              <span className="text-[#4ADE80]">goblin</span> odds
+              Personal analytics · not affiliated with PrizePicks ·
+              <span className="text-[#4ADE80]"> Edge</span> badge = % computed from player&apos;s game log ·
+              No badge = PrizePicks data only, no model projection
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -298,23 +317,17 @@ export default function LiveBoardPage() {
                 }}
               >
                 {lg.icon && lg.name !== "ALL" && (
-                  // Use CSS mask so the SVG shape inherits the current text color
-                  // — works whether the tab is active (dark text on accent) or
-                  // inactive (white text on dark bg). No invert hacks.
-                  <span
+                  // Render the real PrizePicks SVG as a raster image so the
+                  // authentic multi-color logo (NBA blue+red, MLB red+blue,
+                  // soccer ball, etc.) shows up — CSS mask would flatten
+                  // every league to one accent color silhouette.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={lg.icon}
+                    alt=""
                     aria-hidden
-                    className="inline-block w-4 h-4 shrink-0"
-                    style={{
-                      backgroundColor: "currentColor",
-                      WebkitMaskImage: `url(${lg.icon})`,
-                      maskImage: `url(${lg.icon})`,
-                      WebkitMaskRepeat: "no-repeat",
-                      maskRepeat: "no-repeat",
-                      WebkitMaskPosition: "center",
-                      maskPosition: "center",
-                      WebkitMaskSize: "contain",
-                      maskSize: "contain",
-                    }}
+                    className="w-4 h-4 shrink-0 object-contain"
+                    referrerPolicy="no-referrer"
                   />
                 )}
                 <span>{lg.name}</span>
@@ -410,20 +423,31 @@ export default function LiveBoardPage() {
       {!loading && (
         <div className="relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 md:gap-7">
           {visibleProps.map((p, i) => {
-            // Per-prop live stat lookup — null for props whose game hasn't started
-            // (or for leagues we don't have a live source for: NFL, NHL, etc).
-            const matched = liveStats.length > 0 ? matchPropToLive(liveStats, p) : null;
-            const liveStat = matched
-              ? {
-                  value: matched.value,
-                  periodLabel: matched.live.periodLabel,
-                  isFinal: matched.live.isFinal,
-                  homeScore: matched.live.homeScore,
-                  awayScore: matched.live.awayScore,
-                  homeAway: matched.live.homeAway,
-                }
-              : null;
-            return <PropBox key={p.id} prop={p} index={i} liveStat={liveStat} />;
+            const variants = familyMap.get(familyKeyOf(p));
+            // Live-stat lookup closure — re-resolved when the card's user
+            // swaps to a different variant (same player, different line)
+            const liveStatFor = (activeProp: Prop) => {
+              if (liveStats.length === 0) return null;
+              const matched = matchPropToLive(liveStats, activeProp);
+              if (!matched) return null;
+              return {
+                value: matched.value,
+                periodLabel: matched.live.periodLabel,
+                isFinal: matched.live.isFinal,
+                homeScore: matched.live.homeScore,
+                awayScore: matched.live.awayScore,
+                homeAway: matched.live.homeAway,
+              };
+            };
+            return (
+              <PropBox
+                key={p.id}
+                prop={p}
+                index={i}
+                variants={variants}
+                liveStatFor={liveStatFor}
+              />
+            );
           })}
         </div>
       )}

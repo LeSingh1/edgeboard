@@ -62,7 +62,7 @@ export function ProbabilityExplainer({ picks, finalHitProb }: ProbabilityExplain
           >
             <div className="mt-2 rounded-xl border-2 border-dashed border-[#00F5D4]/40 bg-[#0D0D1A]/60 p-3 text-left text-[11px] leading-relaxed">
               <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[#00F5D4] text-[10px] mb-2">
-                Step 1 · Per-pick implied probability
+                Step 1 · Chance each pick hits
               </div>
               <div className="space-y-1.5 font-[family-name:ui-monospace,SFMono-Regular,Menlo,monospace]">
                 {picks.map((p, i) => {
@@ -99,16 +99,16 @@ export function ProbabilityExplainer({ picks, finalHitProb }: ProbabilityExplain
 
               <div className="border-t-2 border-dashed border-white/10 mt-3 pt-3">
                 <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[#00F5D4] text-[10px] mb-1">
-                  Step 3 · Correlation penalty
+                  Step 3 · Same-game / same-player discount
                 </div>
                 <div className="text-white/70 text-[10px] space-y-1">
                   <div>
-                    Risk: <span className="font-bold uppercase" style={{
+                    Overlap: <span className="font-bold uppercase" style={{
                       color: risk === "high" ? "#F87171" : risk === "medium" ? "#FFE600" : "#4ADE80",
-                    }}>{risk}</span> (ρ = {rho.toFixed(2)})
+                    }}>{risk === "low" ? "picks independent" : risk === "medium" ? "some overlap" : "lots of overlap"}</span>
                   </div>
                   <div className="font-[family-name:ui-monospace,SFMono-Regular,Menlo,monospace]">
-                    {correlatedPairs} of {totalPairs} pairs correlated → factor ×{" "}
+                    {correlatedPairs} of {totalPairs} pairs overlap → multiply by{" "}
                     <span className="text-[#FFE600] font-bold">{penaltyFactor.toFixed(3)}</span>
                   </div>
                 </div>

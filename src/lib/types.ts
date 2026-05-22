@@ -24,6 +24,8 @@ export interface Prop {
   isCombo?: boolean;           // Multi-player combo prop
   team: string;
   opponent: string;
+  /** True when the player's team is the HOME team in this game. Undefined when we can't tell. */
+  isHome?: boolean;
   gameTime: string;            // ISO string
   statType: string;            // "Points", "Pass Yards", "Hitter Strikeouts"
   line: number;
@@ -31,6 +33,11 @@ export interface Prop {
   oddsType: OddsType;          // PrizePicks-tagged odds modifier
   isPromo?: boolean;
   isLive?: boolean;
+  // ── PrizePicks metadata (passed through as-is) ──
+  trendingCount?: number;      // Number of users who picked this prop
+  flashSaleLine?: number | null; // Flash sale alternate line (if any)
+  refundable?: boolean;        // Whether the prop can be refunded
+  adjustedOdds?: boolean;      // Whether odds have been adjusted
   // ── Implied probability surface ──
   pMore: number;               // 0..1, derived from oddsType (PrizePicks-implied)
   pLess: number;               // 0..1

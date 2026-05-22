@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { Trophy, Sparkles, ChevronDown, TrendingUp, TrendingDown } from "lucide-react";
+import { Trophy, Sparkles, ChevronDown, TrendingUp, TrendingDown, Zap, Layers } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   recommendLineups,
@@ -9,14 +9,15 @@ import {
   type SizeRecommendation,
 } from "@/lib/optimizer";
 import { OddsBadge } from "@/components/OddsBadge";
+import type { VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { PlayType, Prop, RiskMode } from "@/lib/types";
 
 interface SmartSuggestProps {
   selectedProps: Prop[];
   entryCost: number;
-  playType: PlayType;
   riskMode: RiskMode;
+  variantsByPropId?: Record<string, VariantSet>;
   filters: FilterOptions;
   currentSize: number;
   onApply: (size: number) => void;
@@ -25,8 +26,8 @@ interface SmartSuggestProps {
 export function SmartSuggest({
   selectedProps,
   entryCost,
-  playType,
   riskMode,
+  variantsByPropId,
   filters,
   currentSize,
   onApply,
@@ -36,11 +37,11 @@ export function SmartSuggest({
       recommendLineups({
         selectedProps,
         entryCost,
-        playType,
         riskMode,
+        variantsByPropId,
         filters,
       }),
-    [selectedProps, entryCost, playType, riskMode, filters],
+    [selectedProps, entryCost, riskMode, variantsByPropId, filters],
   );
 
   const [expandedSize, setExpandedSize] = useState<number | null>(
@@ -51,10 +52,10 @@ export function SmartSuggest({
 
   const modeLabel =
     riskMode === "safe"
-      ? "highest hit %"
+      ? "highest chance of hitting"
       : riskMode === "aggressive"
-        ? "highest EV"
-        : "best EV with ≥ 10% hit";
+        ? "highest avg $ per play"
+        : "best avg $ (≥ 10% hit chance)";
 
   return (
     <motion.div
@@ -112,6 +113,9 @@ export function SmartSuggest({
           })}
         </div>
 
+        {/* Play-type variety note */}
+        <PlayTypeMixSummary recs={result.bySize} />
+
         {/* Expanded detail panel — shows the actual picks in the focused size's best slip */}
         <AnimatePresence mode="wait">
           {expandedSize !== null && (
@@ -126,6 +130,54 @@ export function SmartSuggest({
         </AnimatePresence>
       </div>
     </motion.div>
+  );
+}
+
+/** Tiny pill that names the auto-chosen play type for a lineup (Power vs Flex). */
+function PlayTypePill({ playType, compact = true }: { playType: PlayType; compact?: boolean }) {
+  const isPower = playType === "power";
+  return (
+    <span
+      title={
+        isPower
+          ? "Power — every pick must hit. Bigger payout, no safety net."
+          : "Flex — partial hits still pay (e.g. 3/4 wins). Smaller multipliers."
+      }
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest",
+        compact ? "px-1.5 py-0 text-[8px]" : "px-2 py-0.5 text-[10px]",
+      )}
+      style={{
+        borderColor: isPower ? "#7B2FFF" : "#00F5D4",
+        color: isPower ? "#7B2FFF" : "#00F5D4",
+        background: isPower ? "rgba(123,47,255,0.12)" : "rgba(0,245,212,0.12)",
+      }}
+    >
+      {isPower ? <Zap size={9} strokeWidth={3} aria-hidden /> : <Layers size={9} strokeWidth={3} aria-hidden />}
+      {isPower ? "Power" : "Flex"}
+    </span>
+  );
+}
+
+/** Tells the user how many sizes auto-chose Power vs Flex so they see the variety. */
+function PlayTypeMixSummary({ recs }: { recs: SizeRecommendation[] }) {
+  const valid = recs.filter((r) => r.best);
+  if (valid.length === 0) return null;
+  const power = valid.filter((r) => r.playType === "power").length;
+  const flex = valid.filter((r) => r.playType === "flex").length;
+  if (power === 0 || flex === 0) {
+    return (
+      <p className="text-white/40 text-[11px] uppercase tracking-widest font-bold mb-4">
+        Every size auto-chose <span className="text-white/70">{power > 0 ? "Power" : "Flex"}</span>
+        {" "}— that&apos;s the higher avg-$ path for these picks.
+      </p>
+    );
+  }
+  return (
+    <p className="text-white/50 text-[11px] uppercase tracking-widest font-bold mb-4">
+      Mixed play types: <span className="text-[#7B2FFF]">{power} Power</span> ·{" "}
+      <span className="text-[#00F5D4]">{flex} Flex</span> · auto-chosen per size by avg $
+    </p>
   );
 }
 
@@ -176,7 +228,7 @@ function SuggestCard({
         }
       }}
       aria-pressed={isExpanded}
-      aria-label={`${rec.size}-pick ${rec.playType}: ${(best.hitProbability * 100).toFixed(1)} percent hit, ${best.expectedValue.toFixed(2)} dollar EV. ${isRecommended ? "Recommended pick." : ""} Tap to see which picks are in this slip; double-tap to apply.`}
+      aria-label={`${rec.size}-pick ${rec.playType}: ${(best.hitProbability * 100).toFixed(1)} percent chance of hitting, ${best.expectedValue.toFixed(2)} dollars average per play. ${isRecommended ? "Recommended pick." : ""} Tap to see which picks are in this slip; double-tap to apply.`}
       className={cn(
         "relative rounded-2xl border-4 p-3 text-left cursor-pointer overflow-hidden",
         "focus:outline-none focus:ring-4 focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
@@ -199,10 +251,11 @@ function SuggestCard({
           Pick
         </span>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-1">
         <span className="text-[10px] uppercase tracking-widest font-bold text-white/60">
-          {rec.size}-pick {rec.playType}
+          {rec.size}-pick
         </span>
+        <PlayTypePill playType={rec.playType} />
         <ChevronDown
           size={14}
           strokeWidth={3}
@@ -220,22 +273,22 @@ function SuggestCard({
         {(best.hitProbability * 100).toFixed(1)}%
       </div>
       <div className="text-[10px] text-white/60 font-bold uppercase tracking-wider mt-0.5">
-        hit prob
+        chance to hit
       </div>
-      <div className="mt-2 flex items-baseline gap-1">
+      <div className="mt-2 flex items-baseline gap-1" title="Average dollars you'd make per play if you ran this exact slip many times.">
         <span
           className="font-[family-name:var(--font-heading)] font-black text-base"
           style={{ color: evColor }}
         >
           {best.expectedValue >= 0 ? "+" : ""}${best.expectedValue.toFixed(2)}
         </span>
-        <span className="text-[9px] text-white/50 uppercase">ev</span>
+        <span className="text-[9px] text-white/50 uppercase">avg $</span>
       </div>
       <div className="text-[9px] text-white/40 mt-1 font-bold uppercase tracking-wider">
         {best.payoutMultiplier.toFixed(2)}× payout
       </div>
-      <div className="text-[8px] text-white/40 mt-1.5 font-bold tracking-wider">
-        {rec.countPositiveEv} of {rec.totalEvaluated} are +EV
+      <div className="text-[8px] text-white/40 mt-1.5 font-bold tracking-wider" title="How many of the slips at this size make money long-term.">
+        {rec.countPositiveEv} of {rec.totalEvaluated} make money
       </div>
     </motion.div>
   );
@@ -279,13 +332,14 @@ function SuggestDetail({
               </span>
               <span className="text-white/60 text-xs">·</span>
               <span className="font-[family-name:var(--font-heading)] font-black uppercase text-xs text-white tracking-widest">
-                {rec.size}-pick {rec.playType}
+                {rec.size}-pick
               </span>
+              <PlayTypePill playType={rec.playType} compact={false} />
             </div>
             <div className="mt-2 flex flex-wrap gap-3 items-baseline">
               <div>
                 <div className="text-[9px] text-white/50 uppercase tracking-widest font-bold">
-                  Hit prob
+                  Chance to hit
                 </div>
                 <div
                   className="font-[family-name:var(--font-heading)] font-black text-2xl"
@@ -294,9 +348,9 @@ function SuggestDetail({
                   {(best.hitProbability * 100).toFixed(1)}%
                 </div>
               </div>
-              <div>
+              <div title="Average dollars you'd make per play if you ran this exact slip many times.">
                 <div className="text-[9px] text-white/50 uppercase tracking-widest font-bold">
-                  Expected value
+                  Avg $ per play
                 </div>
                 <div
                   className="font-[family-name:var(--font-heading)] font-black text-2xl"
@@ -324,11 +378,11 @@ function SuggestDetail({
             </div>
             {best.expectedValue > 0 ? (
               <p className="text-[#4ADE80] text-xs mt-2 font-bold uppercase tracking-wider">
-                ✓ +EV — expected profit over many plays. Not a single-slip guarantee.
+                ✓ Profitable long-term — makes money on average across many plays. Not a single-slip guarantee.
               </p>
             ) : (
               <p className="text-[#F87171] text-xs mt-2 font-bold uppercase tracking-wider">
-                ✗ −EV — house edge wins long-term at this configuration.
+                ✗ Loses long-term — PrizePicks keeps more than this slip pays back at these odds.
               </p>
             )}
           </div>
@@ -383,7 +437,27 @@ function SuggestDetail({
                     <div className="text-white/60 text-[10px] truncate">
                       {pick.side === "more" ? "MORE" : "LESS"} {pick.prop.line}{" "}
                       {pick.prop.statType}{" "}
-                      <span className="text-white/40">· implied {(pick.probability * 100).toFixed(0)}%</span>
+                      <span className="text-white/40">· {(pick.probability * 100).toFixed(0)}%</span>
+                    </div>
+                    <div
+                      className="text-[9px] font-bold uppercase tracking-widest mt-0.5"
+                      style={{
+                        color:
+                          pick.prop.oddsType === "goblin"
+                            ? "#4ADE80"
+                            : pick.prop.oddsType === "demon"
+                              ? "#FF6B35"
+                              : "#FFE600",
+                      }}
+                      title={
+                        pick.prop.oddsType === "goblin"
+                          ? "Use the GOBLIN line for this pick — 0.85× payout, higher hit %"
+                          : pick.prop.oddsType === "demon"
+                            ? "Use the DEMON line for this pick — 1.5× payout, lower hit %"
+                            : "Use the STANDARD line for this pick"
+                      }
+                    >
+                      Use {pick.prop.oddsType} line
                     </div>
                   </div>
                 </div>

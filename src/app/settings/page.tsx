@@ -89,8 +89,9 @@ export default function SettingsPage() {
         <SettingCard accent="#00F5D4" accent2="#FFE600">
           <SettingHeader icon={Activity} title="Real projection data sources" accent="#00F5D4" />
           <p className="text-white/60 text-sm mb-3">
-            EdgeBoard pulls actual game logs to compute real probabilities — no API keys required.
-            Falls back to PrizePicks-implied odds for everything else.
+            EdgeBoard pulls each player&apos;s past games and uses them to compute the real chance of
+            hitting — no API keys required. When game data isn&apos;t available, falls back to PrizePicks&apos;s
+            own default chance for that line (50% standard, ~40% demon, ~59% goblin).
           </p>
           <ul className="space-y-1.5 text-sm">
             <li className="flex items-center gap-2">
@@ -111,7 +112,7 @@ export default function SettingsPage() {
             <li className="flex items-center gap-2">
               <span className="inline-block w-2 h-2 rounded-full bg-white/30" />
               <strong className="text-white/50 font-[family-name:var(--font-heading)] uppercase tracking-widest text-xs">Other sports</strong>
-              <span className="text-white/50">— PrizePicks-implied (demon/std/goblin) only</span>
+              <span className="text-white/50">— uses PrizePicks&apos;s default chance for that line only</span>
             </li>
           </ul>
         </SettingCard>

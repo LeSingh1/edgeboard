@@ -14,6 +14,35 @@ interface ProjectionState {
   clear: () => void;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Concurrency queue — at most MAX_INFLIGHT real-projection fetches can
+// be in flight at once. The live-board can mount 30+ PropBox cards on
+// page load; without a queue we'd fire 30 parallel ESPN searches and
+// risk rate limits / slowdowns. With max 3 in-flight, the queue drains
+// in ~3–6 seconds for a typical board. Each prop gets resolved exactly
+// once per session (persisted via zustand/persist).
+// ──────────────────────────────────────────────────────────────────────
+
+const MAX_INFLIGHT = 3;
+const queue: Array<() => Promise<void>> = [];
+let inflight = 0;
+
+function drain() {
+  while (inflight < MAX_INFLIGHT && queue.length > 0) {
+    const job = queue.shift()!;
+    inflight++;
+    job().finally(() => {
+      inflight--;
+      drain();
+    });
+  }
+}
+
+function enqueue(job: () => Promise<void>) {
+  queue.push(job);
+  drain();
+}
+
 export const useProjectionStore = create<ProjectionState>()(
   persist(
     (set, get) => ({
@@ -21,32 +50,42 @@ export const useProjectionStore = create<ProjectionState>()(
       pending: new Set(),
       fetchOne: async (prop, ballDontLieKey) => {
         const state = get();
-        if (state.byProp[prop.id] && "available" in state.byProp[prop.id]) {
-          return; // already cached this session
-        }
+        // Already cached this session — bail.
+        // Skip the cache for stale `available: false` entries: when projection
+        // logic ships a new path (e.g. NBA1Q segment scaling), props that
+        // previously returned "no model" now return real data, and we want
+        // those to refetch on next mount instead of being stuck on PP DEFAULT.
+        const cached = state.byProp[prop.id];
+        if (cached && cached.available) return;
         if (state.pending.has(prop.id)) return;
         state.pending.add(prop.id);
-        try {
-          const res = await fetch("/api/projection", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prop, ballDontLieKey }),
+
+        return new Promise<void>((resolve) => {
+          enqueue(async () => {
+            try {
+              const res = await fetch("/api/projection", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prop, ballDontLieKey }),
+              });
+              const data = (await res.json()) as ProjectionResult;
+              set((s) => ({ byProp: { ...s.byProp, [prop.id]: data } }));
+            } catch (e) {
+              set((s) => ({
+                byProp: {
+                  ...s.byProp,
+                  [prop.id]: {
+                    available: false,
+                    reason: e instanceof Error ? e.message : String(e),
+                  },
+                },
+              }));
+            } finally {
+              state.pending.delete(prop.id);
+              resolve();
+            }
           });
-          const data = (await res.json()) as ProjectionResult;
-          set((s) => ({ byProp: { ...s.byProp, [prop.id]: data } }));
-        } catch (e) {
-          set((s) => ({
-            byProp: {
-              ...s.byProp,
-              [prop.id]: {
-                available: false,
-                reason: e instanceof Error ? e.message : String(e),
-              },
-            },
-          }));
-        } finally {
-          state.pending.delete(prop.id);
-        }
+        });
       },
       clear: () => set({ byProp: {}, pending: new Set() }),
     }),

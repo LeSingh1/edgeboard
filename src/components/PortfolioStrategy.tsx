@@ -111,9 +111,9 @@ export function PortfolioStrategy({ lineups }: PortfolioStrategyProps) {
                   Skip this session
                 </div>
                 <p className="text-white/80 text-sm mt-1">
-                  Zero of {lineups.length} lineups have +EV. The house edge wins long-term at every
-                  configuration here. Add more picks, change odds-types in your bench, or wait for a
-                  better board.
+                  None of these {lineups.length} lineups make money long-term. PrizePicks keeps more
+                  than every slip here pays back at these odds. Add more picks, change variants in your
+                  bench, or wait for a better board.
                 </p>
               </div>
             </>
@@ -128,7 +128,7 @@ export function PortfolioStrategy({ lineups }: PortfolioStrategyProps) {
                   Enter the <strong className="text-[#FFE600]">top {recommendation.n}</strong> of{" "}
                   {lineups.length} lineups
                   {positiveEvCount === lineups.length
-                    ? " (every one is +EV — rare, take it)"
+                    ? " (every one makes money long-term — rare, take it)"
                     : ""}
                   .
                 </p>
@@ -146,8 +146,8 @@ export function PortfolioStrategy({ lineups }: PortfolioStrategyProps) {
                   />
                 </div>
                 <p className="text-white/50 text-xs mt-3 leading-relaxed">
-                  Beyond rank #{positiveEvCount}, every lineup has EV ≤ $0 — adding them
-                  <strong className="text-white/70"> reduces </strong> your total expected profit. Stop here.
+                  Beyond rank #{positiveEvCount}, every lineup loses money long-term — adding them
+                  <strong className="text-white/70"> reduces </strong> your average profit. Stop here.
                 </p>
               </div>
             </>
@@ -232,16 +232,15 @@ export function PortfolioStrategy({ lineups }: PortfolioStrategyProps) {
             How this is calculated
           </summary>
           <p className="text-white/60 text-xs mt-2 leading-relaxed">
-            <strong className="text-white/80">Expected profit</strong> for a portfolio of lineups
-            equals the <em>sum</em> of each lineup&apos;s individual EV — this is true regardless of how
-            correlated the lineups are, because expected value is linear. The lineups DO share
-            picks, so variance (how lumpy your week is) goes up when you stack them, but the
-            average outcome over many sessions is just the sum.
+            <strong className="text-white/80">Expected profit</strong> for a stack of lineups equals
+            the <em>sum</em> of each lineup&apos;s individual avg $ per play — that&apos;s true even when
+            lineups share picks. The shared picks make your week lumpier (some weeks all hit, some weeks
+            all miss together), but the long-run average is just the sum.
             <br />
             <br />
-            <strong className="text-white/80">Why stop at +EV count:</strong> each lineup added
-            beyond that has EV ≤ 0, which means you&apos;re paying PrizePicks&apos; house edge for a slot
-            that nudges your expected profit down, not up.
+            <strong className="text-white/80">Why stop counting at the money-makers:</strong> every
+            lineup beyond rank #{positiveEvCount} loses money long-term — paying PrizePicks for
+            a slot that drags your average profit down, not up.
           </p>
         </details>
       </div>

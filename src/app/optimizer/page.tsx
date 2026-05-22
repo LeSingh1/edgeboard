@@ -15,17 +15,20 @@ import {
   Flame,
   X as XIcon,
   ShoppingCart,
+  Sparkles,
 } from "lucide-react";
 import { useEffect } from "react";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { useProjectionStore } from "@/stores/projectionStore";
+import { useIntelStore } from "@/stores/intelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import {
   optimize,
   POWER_MULTIPLIERS,
   applyCorrelationPenalty,
   correlationRisk,
+  detectReversion,
   oddsPayoutFactor,
 } from "@/lib/optimizer";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
@@ -33,15 +36,18 @@ import { OddsBadge } from "@/components/OddsBadge";
 import { ProjectionBadge } from "@/components/ProjectionBadge";
 import { SmartSuggest } from "@/components/SmartSuggest";
 import { ProbabilityExplainer } from "@/components/ProbabilityExplainer";
+import { VariantTabs } from "@/components/VariantTabs";
+import { MatchupIntel } from "@/components/MatchupIntel";
+import { variantCount, type VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
-import type { PlayType, RiskMode } from "@/lib/types";
+import type { RiskMode, Prop } from "@/lib/types";
 
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const RISK_MODES: { id: RiskMode; label: string; icon: typeof Shield; desc: string }[] = [
-  { id: "safe",       label: "Safe",       icon: Shield, desc: "Rank by highest hit %" },
-  { id: "balanced",   label: "Balanced",   icon: Scale,  desc: "EV weighted by correlation" },
-  { id: "aggressive", label: "Aggressive", icon: Flame,  desc: "Highest raw EV" },
+  { id: "safe",       label: "Safe",       icon: Shield, desc: "Highest chance of hitting" },
+  { id: "balanced",   label: "Balanced",   icon: Scale,  desc: "Best avg $ (same-game picks penalized)" },
+  { id: "aggressive", label: "Aggressive", icon: Flame,  desc: "Highest avg $ per play" },
 ];
 
 function nCk(n: number, k: number): number {
@@ -56,31 +62,83 @@ export default function OptimizerPage() {
   const picks = useSelectionStore((s) => s.picks);
   const remove = useSelectionStore((s) => s.remove);
   const toggle = useSelectionStore((s) => s.toggle);
+  const swapVariant = useSelectionStore((s) => s.swapVariant);
   const setResults = useLineupStore((s) => s.setResults);
 
   const ballDontLieKey = useSettingsStore((s) => s.ballDontLieKey);
+  const anthropicKey = useSettingsStore((s) => s.anthropicKey);
   const projByProp = useProjectionStore((s) => s.byProp);
   const fetchProjection = useProjectionStore((s) => s.fetchOne);
+  const intelByProp = useIntelStore((s) => s.byProp);
+  const fetchIntel = useIntelStore((s) => s.fetchOne);
 
-  const rawProps = useMemo(() => picks.map((p) => p.prop), [picks]);
-
-  // Trigger real-projection fetch for every bench pick (MLB free; NBA needs key)
+  // Trigger real-projection fetch for every bench pick AND its sibling variants
+  // (goblin / standard / demon). The optimizer might swap variants when generating
+  // lineups, so we need a real pMore for each line — a goblin line has a much
+  // higher pMore than the standard line, even from the same player gamelog.
   useEffect(() => {
-    rawProps.forEach((p) => fetchProjection(p, ballDontLieKey));
-  }, [rawProps, ballDontLieKey, fetchProjection]);
+    for (const pk of picks) {
+      fetchProjection(pk.prop, ballDontLieKey);
+      if (pk.variants?.goblin && pk.variants.goblin.id !== pk.propId)
+        fetchProjection(pk.variants.goblin, ballDontLieKey);
+      if (pk.variants?.standard && pk.variants.standard.id !== pk.propId)
+        fetchProjection(pk.variants.standard, ballDontLieKey);
+      if (pk.variants?.demon && pk.variants.demon.id !== pk.propId)
+        fetchProjection(pk.variants.demon, ballDontLieKey);
+    }
+  }, [picks, ballDontLieKey, fetchProjection]);
 
-  // Patch props with real projections when available
+  // Trigger matchup-intel fetch (ESPN news + heuristic + optional Claude) for
+  // each bench pick. Only the user's active variant — intel is family-level
+  // (player, opponent), not variant-specific, so one fetch per family.
+  useEffect(() => {
+    for (const pk of picks) {
+      fetchIntel(pk.prop, anthropicKey);
+    }
+  }, [picks, anthropicKey, fetchIntel]);
+
+  // Patch a Prop with real projection data + intel swing (when available).
+  // Intel is family-level (player + opponent), so all variants in a family
+  // share the same swing — caller passes the swing in explicitly.
+  const patchProp = (p: Prop, intelSwing = 0): Prop => {
+    const real = projByProp[p.id];
+    let patched = p;
+    if (real && real.available) {
+      patched = { ...patched, pMore: real.pMore, pLess: real.pLess, modelVersion: real.modelVersion };
+    }
+    if (Math.abs(intelSwing) > 0.005) {
+      const newMore = Math.max(0.02, Math.min(0.98, patched.pMore + intelSwing));
+      patched = { ...patched, pMore: newMore, pLess: 1 - newMore };
+    }
+    return patched;
+  };
+
+  // Patch user's selected variant for live counter + optimizer baseline.
+  // Applies the family-level intel swing on top of the real projection.
   const selectedProps = useMemo(
     () =>
-      rawProps.map((p) => {
-        const real = projByProp[p.id];
-        if (real && real.available) {
-          return { ...p, pMore: real.pMore, pLess: real.pLess, modelVersion: real.modelVersion };
-        }
-        return p;
+      picks.map((pk) => {
+        const swing = intelByProp[pk.propId]?.combinedSwing ?? 0;
+        return patchProp(pk.prop, swing);
       }),
-    [rawProps, projByProp],
+    [picks, projByProp, intelByProp], // eslint-disable-line react-hooks/exhaustive-deps
   );
+
+  // Patch each variant — real projections per-variant, intel swing shared from
+  // the parent pick (intel is player+opponent-level, not line-level).
+  const variantsByPropId = useMemo(() => {
+    const map: Record<string, VariantSet> = {};
+    for (const pk of picks) {
+      if (!pk.variants) continue;
+      const swing = intelByProp[pk.propId]?.combinedSwing ?? 0;
+      const patched: VariantSet = {};
+      if (pk.variants.goblin) patched.goblin = patchProp(pk.variants.goblin, swing);
+      if (pk.variants.standard) patched.standard = patchProp(pk.variants.standard, swing);
+      if (pk.variants.demon) patched.demon = patchProp(pk.variants.demon, swing);
+      map[pk.propId] = patched;
+    }
+    return map;
+  }, [picks, projByProp, intelByProp]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const N = selectedProps.length;
   const slipSize = Math.min(Math.max(N, 2), 6);
@@ -96,9 +154,9 @@ export default function OptimizerPage() {
     return applyCorrelationPenalty(pIndependent, selectedProps);
   }, [picks, selectedProps, N]);
   const slipCorrRisk = useMemo(() => correlationRisk(selectedProps), [selectedProps]);
+  const reversion = useMemo(() => detectReversion(selectedProps), [selectedProps]);
 
   const [entry, setEntry] = useState<number>(20);
-  const [playType, setPlayType] = useState<PlayType>("power");
   const [risk, setRisk] = useState<RiskMode>("balanced");
   const [size, setSize] = useState<number>(slipSize);
   const [running, setRunning] = useState(false);
@@ -144,15 +202,17 @@ export default function OptimizerPage() {
     const result = optimize({
       selectedProps,
       lineupSize: k,
-      playType,
       entryCost: entry,
       riskMode: risk,
       maxResults: 50,
+      variantsByPropId,
       filters,
     });
     setResults({
       ...result,
-      params: { lineupSize: k, playType, entryCost: entry, riskMode: risk },
+      // playType is per-lineup now — store "mixed" sentinel for the params header.
+      // The leaderboard reads playType from each individual lineup.
+      params: { lineupSize: k, playType: "power", entryCost: entry, riskMode: risk },
     });
     router.push("/slips");
   };
@@ -216,9 +276,8 @@ export default function OptimizerPage() {
         When you&apos;re ready, generate every alternative combination ranked by chance of hitting.
       </p>
       <p className="text-white/40 text-xs mb-10 max-w-2xl uppercase tracking-widest font-bold">
-        % values are PrizePicks-implied (standard 50/50,{" "}
-        <span className="text-[#FF6B35]">demon ~40%</span>,{" "}
-        <span className="text-[#4ADE80]">goblin ~59%</span>) · payout factors stack
+        Picks with an <span className="text-[#4ADE80]">Edge</span> badge show % from the player&apos;s game log ·
+        picks without a badge use PrizePicks line data only
       </p>
 
       {/* ════════════════════════════════════════════════════════════════
@@ -261,6 +320,15 @@ export default function OptimizerPage() {
                   const patched = selectedProps[i] ?? pick.prop;
                   const pMore = patched.pMore * 100;
                   const pLess = patched.pLess * 100;
+                  // Narrow projection result so we can pull adjustments + baseline for MatchupIntel
+                  const projRaw = projByProp[pick.propId];
+                  const projAvail = projRaw && projRaw.available ? projRaw : null;
+                  const baselineForSide =
+                    projAvail?.baselinePMore !== undefined
+                      ? pick.side === "more"
+                        ? projAvail.baselinePMore
+                        : 1 - projAvail.baselinePMore
+                      : undefined;
                   return (
                     <motion.div
                       key={pick.propId}
@@ -269,9 +337,10 @@ export default function OptimizerPage() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -30 }}
                       transition={{ type: "spring", damping: 22 }}
-                      className="relative rounded-2xl border-4 p-3 bg-[#0D0D1A]/60 backdrop-blur-sm flex items-center gap-3"
+                      className="relative rounded-2xl border-4 p-3 bg-[#0D0D1A]/60 backdrop-blur-sm"
                       style={{ borderColor: accent, boxShadow: `3px 3px 0 ${accent2}` }}
                     >
+                      <div className="flex items-center gap-3">
                       {/* Headshot */}
                       <div
                         className="w-14 h-14 rounded-full border-2 overflow-hidden flex-shrink-0 bg-[#0D0D1A] flex items-center justify-center"
@@ -292,7 +361,7 @@ export default function OptimizerPage() {
                         )}
                       </div>
 
-                      {/* Player + stat */}
+                      {/* Player + stat + variant swap */}
                       <div className="flex-1 min-w-0 mr-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <div className="font-[family-name:var(--font-heading)] font-black uppercase text-sm truncate">
@@ -306,9 +375,22 @@ export default function OptimizerPage() {
                           {pick.prop.statType}
                           {pick.prop.sport ? <span className="opacity-60"> · {pick.prop.sport}</span> : null}
                         </div>
+                        {/* Variant ladder row — shows every rung the user could swap to */}
+                        {pick.variants && variantCount(pick.variants) > 1 && (
+                          <div className="mt-1.5">
+                            <VariantTabs
+                              variants={pick.variants}
+                              activePropId={pick.propId}
+                              compact
+                              onChange={(newProp) =>
+                                swapVariant(pick.propId, newProp, pick.variants)
+                              }
+                            />
+                          </div>
+                        )}
                       </div>
 
-                      {/* MORE/LESS toggle */}
+                      {/* MORE/LESS toggle — LESS hidden for demon/goblin (MORE only) */}
                       <div className="flex gap-1.5 flex-shrink-0">
                         <button
                           onClick={() => toggle(pick.prop, "more")}
@@ -325,21 +407,30 @@ export default function OptimizerPage() {
                           </div>
                           <span className="text-[9px] opacity-80">{pMore.toFixed(0)}%</span>
                         </button>
-                        <button
-                          onClick={() => toggle(pick.prop, "less")}
-                          className={cn(
-                            "px-3 py-2 rounded-lg border-2 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-wider transition-all flex flex-col items-center justify-center gap-0",
-                            !isMore
-                              ? "bg-[#F87171] border-[#FFE600] text-[#0D0D1A] shadow-[2px_2px_0_#0D0D1A]"
-                              : "border-[#F87171]/60 text-[#F87171]/70 hover:bg-[#F87171]/15 hover:border-[#F87171]",
-                          )}
-                        >
-                          <div className="flex items-center gap-1 text-[11px]">
-                            <TrendingDown size={11} strokeWidth={3} />
-                            Less
-                          </div>
-                          <span className="text-[9px] opacity-80">{pLess.toFixed(0)}%</span>
-                        </button>
+                        {pick.prop.oddsType === "standard" ? (
+                          <button
+                            onClick={() => toggle(pick.prop, "less")}
+                            className={cn(
+                              "px-3 py-2 rounded-lg border-2 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-wider transition-all flex flex-col items-center justify-center gap-0",
+                              !isMore
+                                ? "bg-[#F87171] border-[#FFE600] text-[#0D0D1A] shadow-[2px_2px_0_#0D0D1A]"
+                                : "border-[#F87171]/60 text-[#F87171]/70 hover:bg-[#F87171]/15 hover:border-[#F87171]",
+                            )}
+                          >
+                            <div className="flex items-center gap-1 text-[11px]">
+                              <TrendingDown size={11} strokeWidth={3} />
+                              Less
+                            </div>
+                            <span className="text-[9px] opacity-80">{pLess.toFixed(0)}%</span>
+                          </button>
+                        ) : (
+                          <span
+                            title={`${pick.prop.oddsType === "demon" ? "Demon" : "Goblin"} — MORE only on PrizePicks`}
+                            className="px-2 py-2 rounded-lg border-2 border-dashed border-white/15 text-white/30 text-[9px] font-bold uppercase tracking-widest flex items-center justify-center"
+                          >
+                            More only
+                          </span>
+                        )}
                       </div>
 
                       <button
@@ -349,6 +440,15 @@ export default function OptimizerPage() {
                       >
                         <XIcon size={14} strokeWidth={3} />
                       </button>
+                      </div>
+
+                      {/* Matchup intel — expandable AI grade explainer */}
+                      <MatchupIntel
+                        intel={intelByProp[pick.propId]}
+                        adjustments={projAvail?.adjustments}
+                        finalPMore={pick.side === "more" ? patched.pMore : patched.pLess}
+                        baselinePMore={baselineForSide}
+                      />
                     </motion.div>
                   );
                 })}
@@ -391,13 +491,56 @@ export default function OptimizerPage() {
               finalHitProb={slipHitProb}
             />
 
+            {/* Reversion lineup warning — fires when every (or most) picks are
+                from the same game. PrizePicks reduces their payout for these
+                slips (the "Reversion lineup payouts are different" banner the
+                user sees in the actual app). Our estimate doesn't apply that
+                same discount, so a full reversion will pay ~5-10% less in
+                reality than the "Payout (est.)" box shows. */}
+            {reversion.level !== "none" && (
+              <div
+                className={cn(
+                  "mt-4 w-full max-w-[280px] rounded-xl border-2 border-dashed px-3 py-2 text-left",
+                  reversion.level === "full"
+                    ? "border-[#FF6B35] bg-[#FF6B35]/10"
+                    : "border-[#FFE600] bg-[#FFE600]/10",
+                )}
+                title={
+                  reversion.level === "full"
+                    ? "All your picks are in the same game. PrizePicks tags this a 'reversion lineup' and applies a reduced multiplier — expect to be paid ~5–10% less than the estimated payout."
+                    : `${reversion.sharedCount} of ${reversion.totalPicks} picks share a game. PrizePicks may apply a partial reversion discount on the payout.`
+                }
+              >
+                <div
+                  className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px]"
+                  style={{ color: reversion.level === "full" ? "#FF6B35" : "#FFE600" }}
+                >
+                  ⚠ {reversion.level === "full" ? "Reversion lineup" : "Partial reversion"}
+                </div>
+                <div className="text-white/70 text-[10px] leading-snug mt-1">
+                  {reversion.level === "full" ? (
+                    <>
+                      All {reversion.totalPicks} picks share one game. PrizePicks pays{" "}
+                      <strong className="text-[#FF6B35]">~5–10% less</strong> on these slips than the
+                      estimate below.
+                    </>
+                  ) : (
+                    <>
+                      {reversion.sharedCount} of {reversion.totalPicks} picks share a game.
+                      PrizePicks may apply a partial discount.
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Payout panel */}
             <div className="mt-6 w-full max-w-[280px] grid grid-cols-2 gap-2">
               <div
                 className="rounded-xl border-4 border-[#00F5D4] p-3 bg-[#0D0D1A]/40"
-                title={`Power Play base ${baseMult}× × odds-type factor ${oddsFactor.toFixed(2)}× (demon ×1.25, goblin ×0.85 stacking)`}
+                title={`Power Play base ${baseMult}× × odds-type factor ${oddsFactor.toFixed(2)}× (demon ×1.5, goblin ×0.85 stacking). PrizePicks computes their own multiplier per slip — actual payout can vary slightly with how deep your demon/goblin lines are from standard. Verify on the PrizePicks app before entering.`}
               >
-                <div className="text-[9px] uppercase tracking-widest font-bold text-white/60">Payout</div>
+                <div className="text-[9px] uppercase tracking-widest font-bold text-white/60">Payout (est.)</div>
                 <div className="font-[family-name:var(--font-heading)] font-black text-2xl text-[#00F5D4]">
                   {slipMultiplier.toFixed(2)}×
                 </div>
@@ -418,21 +561,36 @@ export default function OptimizerPage() {
                 style={{
                   borderColor: slipEv >= 0 ? "#4ADE80" : "#F87171",
                 }}
+                title="Average dollars you'd make per play if you ran this exact slip many times. Positive = makes money long-term, negative = loses long-term."
               >
-                <div className="text-[9px] uppercase tracking-widest font-bold text-white/60">Expected value</div>
+                <div className="text-[9px] uppercase tracking-widest font-bold text-white/60">
+                  Avg $ per play
+                </div>
                 <div
                   className="font-[family-name:var(--font-heading)] font-black text-3xl"
                   style={{ color: slipEv >= 0 ? "#4ADE80" : "#F87171" }}
                 >
                   {slipEv >= 0 ? "+" : ""}${slipEv.toFixed(2)}
                 </div>
+                <div className="text-[8px] text-white/50 font-bold tracking-widest mt-0.5">
+                  {slipEv >= 0 ? "profitable long-term" : "loses long-term"}
+                </div>
               </div>
             </div>
 
-            {/* Correlation badge */}
+            {/* Overlap badge — same-game / same-player picks are correlated,
+                so when one wins the others are more likely to too. Higher overlap =
+                lumpier results (bigger wins, bigger zeros). */}
             <div className="mt-3">
               <span
-                className="inline-flex items-center px-3 py-1 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase text-[10px] tracking-widest"
+                title={
+                  slipCorrRisk === "low"
+                    ? "Your picks are from different games and players — outcomes are independent."
+                    : slipCorrRisk === "medium"
+                      ? "Some picks share a game or player. Outcomes are partially linked."
+                      : "Many picks share games or players. Results will be lumpy — big wins or big zeros, not balanced."
+                }
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase text-[10px] tracking-widest"
                 style={{
                   borderColor:
                     slipCorrRisk === "high"
@@ -455,7 +613,19 @@ export default function OptimizerPage() {
                   }`,
                 }}
               >
-                {slipCorrRisk} correlation
+                <span
+                  aria-hidden
+                  className="inline-block w-1.5 h-1.5 rounded-full"
+                  style={{
+                    background:
+                      slipCorrRisk === "high"
+                        ? "#F87171"
+                        : slipCorrRisk === "medium"
+                          ? "#FFE600"
+                          : "#4ADE80",
+                  }}
+                />
+                {slipCorrRisk === "low" ? "Picks independent" : slipCorrRisk === "medium" ? "Some overlap" : "Lots of overlap"}
               </span>
             </div>
           </div>
@@ -469,8 +639,8 @@ export default function OptimizerPage() {
         <SmartSuggest
           selectedProps={selectedProps}
           entryCost={entry}
-          playType={playType}
           riskMode={risk}
+          variantsByPropId={variantsByPropId}
           filters={filters}
           currentSize={size}
           onApply={(s) => setSize(s)}
@@ -513,27 +683,21 @@ export default function OptimizerPage() {
           </ControlCard>
 
           <ControlCard title="Play type" icon={Zap} accent="#00F5D4" accent2="#FF3AF2">
-            <div className="grid grid-cols-2 gap-3">
-              {(["power", "flex"] as const).map((pt) => (
-                <button
-                  key={pt}
-                  onClick={() => setPlayType(pt)}
-                  className={cn(
-                    "h-14 rounded-2xl border-4 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
-                    pt === playType
-                      ? "bg-[#00F5D4] border-[#FF3AF2] text-[#0D0D1A] scale-105 shadow-[3px_3px_0_#FF3AF2]"
-                      : "border-[#00F5D4] text-white hover:bg-[#00F5D4]/20",
-                  )}
-                >
-                  {pt === "power" ? "Power" : "Flex"}
-                </button>
-              ))}
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl border-4 border-[#00F5D4] bg-[#00F5D4]/10 flex items-center justify-center flex-shrink-0">
+                <Sparkles className="text-[#00F5D4]" size={18} strokeWidth={3} />
+              </div>
+              <div>
+                <div className="font-[family-name:var(--font-heading)] font-black uppercase text-sm text-[#00F5D4]">
+                  Auto-picked per lineup
+                </div>
+                <p className="text-white/60 text-xs mt-1">
+                  The optimizer generates BOTH Power and Flex versions of every lineup shape and
+                  surfaces whichever has the better long-run average dollars. Your leaderboard will show a
+                  mix tagged with the play type that won — more variety, less guesswork.
+                </p>
+              </div>
             </div>
-            <p className="text-white/60 text-xs mt-2">
-              {playType === "power"
-                ? "All picks must hit. Bigger payouts, no safety net."
-                : "Partial hits still pay (e.g. 3/4 wins). Smaller multipliers."}
-            </p>
           </ControlCard>
 
           <ControlCard title="Entry cost" icon={TrendingUp} accent="#FFE600" accent2="#7B2FFF">
@@ -620,7 +784,7 @@ export default function OptimizerPage() {
               <div>
                 <div className="flex justify-between mb-1">
                   <label className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-[#7B2FFF]">
-                    Min EV ($)
+                    Min avg $ per play
                   </label>
                   <span
                     className="font-[family-name:var(--font-display)] text-xl leading-none"
@@ -637,10 +801,10 @@ export default function OptimizerPage() {
                   value={minEv}
                   onChange={(e) => setMinEv(Number(e.target.value))}
                   className="w-full accent-[#7B2FFF]"
-                  aria-label="Minimum expected value in dollars"
+                  aria-label="Minimum average dollars per play"
                 />
                 <div className="text-[10px] text-white/40 font-bold mt-1">
-                  ≥ $0 = only +EV slips · negative = allow risky bets
+                  ≥ $0 = only slips that make money long-term · negative = allow losing-bet slips
                 </div>
               </div>
               {(minHitPct > 0 || minEv > -50) && (
@@ -662,7 +826,7 @@ export default function OptimizerPage() {
         <aside>
           <div className="sticky top-24 space-y-4">
             <motion.div
-              key={`${N}-${k}-${playType}`}
+              key={`${N}-${k}`}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               className="relative rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 via-[#7B2FFF]/30 to-[#00F5D4]/30 backdrop-blur-sm p-6"
@@ -703,7 +867,7 @@ export default function OptimizerPage() {
             </button>
 
             <p className="text-center text-white/50 text-xs">
-              Default rank: hit % (Safe mode). Switch above to weigh by EV.
+              Default rank: chance of hitting (Safe). Switch above to weigh by avg $ per play.
             </p>
           </div>
         </aside>

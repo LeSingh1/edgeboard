@@ -11,15 +11,33 @@
 
 import type { Prop } from "@/lib/types";
 
+export interface ProjectionAdjustment {
+  /** "Recent form", "vs NY Knicks", "Home/Away", etc. */
+  label: string;
+  /** Mean shift applied (additive on the projection mean). e.g. +1.3 = projection bumped up. */
+  shift: number;
+  /** Final pMore swing this adjustment caused (signed, 0..1 absolute). */
+  pMoreSwing: number;
+  /** Human reason: "last 5 games avg 28.4 vs season 25.1" */
+  reason: string;
+  /** How much to trust this signal: 0..1. Small samples = lower confidence. */
+  confidence: number;
+}
+
 export interface RealProjection {
-  pMore: number;
+  pMore: number;              // FINAL pMore after all adjustments
   pLess: number;
-  projection: number;
+  projection: number;         // FINAL projection mean after all adjustments
   sigma: number;
   sampleSize: number;
   recent: number[];           // last few raw values for the chart / explainer
   source: string;             // e.g. "MLB Stats API · last 49 games"
   modelVersion: string;       // e.g. "mlb-rolling-v1"
+  /** Baseline (pre-adjustment) projection for transparency in the explainer. */
+  baselineProjection?: number;
+  baselinePMore?: number;
+  /** Per-signal breakdown of what moved the number from baseline → final. */
+  adjustments?: ProjectionAdjustment[];
 }
 
 export interface UnavailableProjection {
@@ -73,6 +91,235 @@ function buildResult(values: number[], line: number, source: string, modelVersio
     recent: values.slice(-10),
     source: `${source} · last ${values.length} games`,
     modelVersion,
+  };
+}
+
+/**
+ * Apply stat-driven adjustments (recent form, vs-opponent, home/away) to a baseline
+ * result. Each adjustment shifts the projection mean and is recorded in the
+ * `adjustments` array so the UI can show the breakdown to the user.
+ *
+ * Adjustments are SHIFTS not MULTIPLIERS — additive on the mean — because for
+ * counting stats like points/rebounds, a "10% bump in form" feels like "shift +2
+ * on a 20 PPG line" rather than "multiply line by 1.1".
+ */
+function applyAdjustments(
+  baseline: RealProjection & { available: true },
+  line: number,
+  signals: {
+    /** Recent values in chronological order (oldest → newest), aligned with events. */
+    chronoValues: number[];
+    /** Per-game opponent abbreviation, aligned with chronoValues. */
+    opponents: (string | undefined)[];
+    /** Per-game "@" (away) or "vs" (home), aligned with chronoValues. */
+    atVs?: (string | undefined)[];
+    /** Per-game ISO dates, aligned with chronoValues. */
+    dates?: (string | undefined)[];
+    /** Abbreviation for the prop's opponent — case-insensitive match. */
+    propOpponent?: string;
+    /** Whether the player's team is HOME in the prop's game. Drives the home/away signal. */
+    propIsHome?: boolean;
+    /** ISO timestamp of the prop's game — used to compute days-rest from the
+     *  previous gamelog entry. */
+    propGameTime?: string;
+  },
+): ProjectionResult {
+  const adjustments: ProjectionAdjustment[] = [];
+  let adjustedMean = baseline.projection;
+  const sigma = baseline.sigma;
+
+  const seasonMean = baseline.projection;
+
+  // ── (1) Recent form: last 5 vs season ──
+  if (signals.chronoValues.length >= 8) {
+    const lastN = signals.chronoValues.slice(-5);
+    const recentMean = lastN.reduce((a, b) => a + b, 0) / lastN.length;
+    const shift = recentMean - seasonMean;
+    if (Math.abs(shift) > sigma * 0.15) {
+      // Only record when the deviation is meaningful (>15% of sigma)
+      // Confidence scales with sample size — 5 games = 0.55, blend with season
+      const confidence = 0.55;
+      const blendedShift = shift * confidence;
+      adjustments.push({
+        label: "Recent form",
+        shift: r3(blendedShift),
+        pMoreSwing: 0, // filled in below after we know final pMore
+        reason:
+          `Last 5 games avg ${r3(recentMean)} vs season ${r3(seasonMean)} ` +
+          `(${shift >= 0 ? "hot" : "cold"} streak)`,
+        confidence,
+      });
+      adjustedMean += blendedShift;
+    }
+  }
+
+  // ── (2) vs Opponent: games against this specific team ──
+  if (signals.propOpponent && signals.chronoValues.length === signals.opponents.length) {
+    const target = signals.propOpponent.toUpperCase();
+    const vsValues: number[] = [];
+    for (let i = 0; i < signals.chronoValues.length; i++) {
+      const opp = (signals.opponents[i] ?? "").toUpperCase();
+      if (opp && (opp === target || target.startsWith(opp) || opp.startsWith(target))) {
+        vsValues.push(signals.chronoValues[i]);
+      }
+    }
+    if (vsValues.length >= 2) {
+      const vsMean = vsValues.reduce((a, b) => a + b, 0) / vsValues.length;
+      const shift = vsMean - seasonMean;
+      if (Math.abs(shift) > sigma * 0.2) {
+        // Confidence scales with sample size: 2 games = 0.2, 5+ = 0.6
+        const confidence = Math.min(0.6, 0.1 + vsValues.length * 0.1);
+        const blendedShift = shift * confidence;
+        adjustments.push({
+          label: `vs ${signals.propOpponent}`,
+          shift: r3(blendedShift),
+          pMoreSwing: 0,
+          reason:
+            `${vsValues.length} game${vsValues.length === 1 ? "" : "s"} vs ${signals.propOpponent}: ` +
+            `avg ${r3(vsMean)} (${shift >= 0 ? "+" : ""}${r3(shift)} vs season)`,
+          confidence,
+        });
+        adjustedMean += blendedShift;
+      }
+    }
+  }
+
+  // ── (3) Home / Away split ──
+  // Most players have measurably different output at home vs on the road.
+  // Use the gamelog's atVs flag — "vs" means home, "@" means away. Need both
+  // to compute a meaningful split (else we'd compare to the full season,
+  // double-counting noise).
+  if (
+    signals.propIsHome !== undefined &&
+    signals.atVs &&
+    signals.chronoValues.length === signals.atVs.length
+  ) {
+    const homeVals: number[] = [];
+    const awayVals: number[] = [];
+    for (let i = 0; i < signals.chronoValues.length; i++) {
+      const tag = (signals.atVs[i] ?? "").trim();
+      if (tag === "vs") homeVals.push(signals.chronoValues[i]);
+      else if (tag === "@") awayVals.push(signals.chronoValues[i]);
+    }
+    if (homeVals.length >= 4 && awayVals.length >= 4) {
+      const homeMean = homeVals.reduce((a, b) => a + b, 0) / homeVals.length;
+      const awayMean = awayVals.reduce((a, b) => a + b, 0) / awayVals.length;
+      const targetMean = signals.propIsHome ? homeMean : awayMean;
+      const shift = targetMean - seasonMean;
+      if (Math.abs(shift) > sigma * 0.15) {
+        // 8+ games each side = high confidence (0.5), fewer = scale down
+        const minSide = Math.min(homeVals.length, awayVals.length);
+        const confidence = Math.min(0.5, 0.15 + minSide * 0.04);
+        const blendedShift = shift * confidence;
+        const where = signals.propIsHome ? "at home" : "on the road";
+        adjustments.push({
+          label: signals.propIsHome ? "Home games" : "Road games",
+          shift: r3(blendedShift),
+          pMoreSwing: 0,
+          reason:
+            `${homeVals.length}H avg ${r3(homeMean)} · ${awayVals.length}A avg ${r3(awayMean)}. ` +
+            `Playing ${where} ${shift >= 0 ? "favors" : "hurts"} MORE.`,
+          confidence,
+        });
+        adjustedMean += blendedShift;
+      }
+    }
+  }
+
+  // ── (4) Days rest ──
+  // 0-rest (back-to-back) is a measurable fatigue penalty in NBA/WNBA;
+  // 3+ rest days is "fresh." Compare the prop's days-rest vs the player's
+  // gamelog distribution.
+  if (
+    signals.propGameTime &&
+    signals.dates &&
+    signals.chronoValues.length === signals.dates.length
+  ) {
+    const propDay = new Date(signals.propGameTime).getTime();
+    if (Number.isFinite(propDay)) {
+      // Find the most recent game in the gamelog (the entry whose date is BEFORE propDay)
+      let prevDay: number | null = null;
+      for (let i = signals.dates.length - 1; i >= 0; i--) {
+        const d = signals.dates[i];
+        if (!d) continue;
+        const t = new Date(d).getTime();
+        if (Number.isFinite(t) && t < propDay) {
+          prevDay = t;
+          break;
+        }
+      }
+      if (prevDay !== null) {
+        const daysRest = Math.floor((propDay - prevDay) / (24 * 60 * 60 * 1000));
+        // Bucket the gamelog into 0 / 1 / 2 / 3+ rest days based on the gap to
+        // the PREVIOUS gamelog entry, then take the mean of the bucket the
+        // prop's rest falls into.
+        const bucketValues: number[] = [];
+        for (let i = 1; i < signals.dates.length; i++) {
+          const da = signals.dates[i - 1];
+          const db = signals.dates[i];
+          if (!da || !db) continue;
+          const gap = Math.floor(
+            (new Date(db).getTime() - new Date(da).getTime()) / (24 * 60 * 60 * 1000),
+          );
+          if (!Number.isFinite(gap) || gap < 0) continue;
+          // Match the prop's rest bucket (collapse 3+ together)
+          const propBucket = Math.min(3, Math.max(0, daysRest));
+          const gameBucket = Math.min(3, Math.max(0, gap));
+          if (gameBucket === propBucket) bucketValues.push(signals.chronoValues[i]);
+        }
+        if (bucketValues.length >= 5) {
+          const bucketMean = bucketValues.reduce((a, b) => a + b, 0) / bucketValues.length;
+          const shift = bucketMean - seasonMean;
+          if (Math.abs(shift) > sigma * 0.2) {
+            const confidence = Math.min(0.4, 0.1 + bucketValues.length * 0.03);
+            const blendedShift = shift * confidence;
+            const restLabel =
+              daysRest === 0
+                ? "Back-to-back"
+                : daysRest === 1
+                  ? "1 day rest"
+                  : daysRest === 2
+                    ? "2 days rest"
+                    : "3+ days rest";
+            adjustments.push({
+              label: restLabel,
+              shift: r3(blendedShift),
+              pMoreSwing: 0,
+              reason:
+                `${bucketValues.length} past games on this rest pattern: ` +
+                `avg ${r3(bucketMean)} (${shift >= 0 ? "+" : ""}${r3(shift)} vs season).`,
+              confidence,
+            });
+            adjustedMean += blendedShift;
+          }
+        }
+      }
+    }
+  }
+
+  // No adjustments fired → return baseline untouched
+  if (adjustments.length === 0) return baseline;
+
+  // Recompute pMore from the adjusted mean
+  const adjZ = (line - adjustedMean) / sigma;
+  const adjustedPMore = Math.max(0.02, Math.min(0.98, 1 - cdfNormal(adjZ)));
+
+  // Back-fill each adjustment's pMore swing for the UI breakdown.
+  // We approximate: each adjustment contributes proportionally to its shift.
+  const totalShift = adjustments.reduce((s, a) => s + a.shift, 0);
+  const totalSwing = adjustedPMore - baseline.pMore;
+  for (const a of adjustments) {
+    a.pMoreSwing = r3(totalShift === 0 ? 0 : (a.shift / totalShift) * totalSwing);
+  }
+
+  return {
+    ...baseline,
+    projection: r3(adjustedMean),
+    pMore: r3(adjustedPMore),
+    pLess: r3(1 - adjustedPMore),
+    baselineProjection: baseline.projection,
+    baselinePMore: baseline.pMore,
+    adjustments,
   };
 }
 
@@ -251,7 +498,9 @@ const ESPN_BASKETBALL_STATS: Record<string, EspnStatExtractor> = {
   "PRA":             (s, l) => extractByLabel(s, l, "PTS") + extractByLabel(s, l, "REB") + extractByLabel(s, l, "AST"),
   "Rebs+Asts":       (s, l) => extractByLabel(s, l, "REB") + extractByLabel(s, l, "AST"),
   "Stocks":          (s, l) => extractByLabel(s, l, "STL") + extractByLabel(s, l, "BLK"),
-  "Defensive Rebounds": (s, l) => extractByLabel(s, l, "REB"), // ESPN doesn't split DREB/OREB in basic log
+  // OREB / DREB intentionally NOT here — ESPN gamelog only carries total REB.
+  // Those stat types are handled via the derived-rebound path in nbaProjection()
+  // using ESPN's per-season averages endpoint (which DOES split OR/DR).
   "Fantasy Score":   (s, l) =>
     extractByLabel(s, l, "PTS") +
     extractByLabel(s, l, "REB") * 1.2 +
@@ -272,6 +521,14 @@ interface EspnSearchItem {
 interface EspnGamelogEvent {
   eventId: string;
   stats: string[];
+}
+
+/** Event metadata pulled from the gamelog's parallel `events` lookup table. */
+interface EspnEventMeta {
+  eventId: string;
+  gameDate?: string;             // ISO timestamp
+  opponentAbbr?: string;         // "NY", "BOS", etc.
+  atVs?: string;                 // "@" (away) or "vs" (home)
 }
 
 async function espnFindAthleteId(
@@ -309,11 +566,16 @@ async function espnFindAthleteId(
 async function espnGameLog(
   athleteId: number,
   league: "nba" | "wnba",
-): Promise<{ labels: string[]; events: EspnGamelogEvent[] }> {
+): Promise<{
+  labels: string[];
+  events: EspnGamelogEvent[];
+  /** propId → opponent abbr + game date, used for vs-opponent + recent form adjustments */
+  meta: Map<string, EspnEventMeta>;
+}> {
   const url = `https://site.web.api.espn.com/apis/common/v3/sports/basketball/${league}/athletes/${athleteId}/gamelog`;
   try {
     const res = await fetch(url, { next: { revalidate: 3600 } });
-    if (!res.ok) return { labels: [], events: [] };
+    if (!res.ok) return { labels: [], events: [], meta: new Map() };
     const data = await res.json();
     const labels: string[] = data.labels ?? [];
     const events: EspnGamelogEvent[] = [];
@@ -326,38 +588,243 @@ async function espnGameLog(
         }
       }
     }
-    return { labels, events };
+    // Parallel events table — opponent + date per eventId
+    const meta = new Map<string, EspnEventMeta>();
+    const rawEvents = (data.events ?? {}) as Record<string, {
+      gameDate?: string;
+      atVs?: string;
+      opponent?: { abbreviation?: string };
+    }>;
+    for (const [id, ev] of Object.entries(rawEvents)) {
+      meta.set(id, {
+        eventId: id,
+        gameDate: ev.gameDate,
+        opponentAbbr: ev.opponent?.abbreviation,
+        atVs: ev.atVs,
+      });
+    }
+    return { labels, events, meta };
   } catch {
-    return { labels: [], events: [] };
+    return { labels: [], events: [], meta: new Map() };
   }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// ESPN per-season averages — used for OREB/DREB which aren't in the gamelog.
+// The /athletes/{id}/stats endpoint returns season-average rows with labels
+// including 'OR' (offensive rebounds per game) and 'DR' (defensive per game).
+// We pull the most-recent season's OR / DR / REB averages and use them to
+// derive per-game distributions from the gamelog's total-REB values.
+// ───────────────────────────────────────────────────────────────────────
+
+interface EspnSeasonStatRow {
+  teamSlug?: string;
+  season?: { year?: number; displayName?: string };
+  stats?: string[];
+  position?: string;
+}
+
+interface EspnSeasonStatCategory {
+  displayName?: string;
+  labels?: string[];
+  statistics?: EspnSeasonStatRow[];
+}
+
+interface EspnSeasonStatsResponse {
+  categories?: EspnSeasonStatCategory[];
+}
+
+/**
+ * Pull current-season OR/DR/REB per-game averages for a player.
+ * Returns null if not available or if REB is zero (avoid div-by-zero).
+ */
+async function fetchEspnSeasonRebSplit(
+  athleteId: number,
+  league: "nba" | "wnba",
+): Promise<{ orPerGame: number; drPerGame: number; rebPerGame: number } | null> {
+  const url = `https://site.web.api.espn.com/apis/common/v3/sports/basketball/${league}/athletes/${athleteId}/stats`;
+  try {
+    const res = await fetch(url, { next: { revalidate: 86400 } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as EspnSeasonStatsResponse;
+    const avgCat = (data.categories ?? []).find(
+      (c) => c.displayName === "Regular Season Averages",
+    );
+    if (!avgCat?.labels || !avgCat.statistics) return null;
+    const labels = avgCat.labels;
+    const iOR = labels.indexOf("OR");
+    const iDR = labels.indexOf("DR");
+    const iREB = labels.indexOf("REB");
+    if (iOR === -1 || iDR === -1 || iREB === -1) return null;
+    // Pick the most recent season's row. ESPN gives one row per (team, season),
+    // so a mid-season trade can produce two rows for the same year — we just
+    // take whichever has the highest year, ties broken by appearance order.
+    let best: EspnSeasonStatRow | null = null;
+    for (const r of avgCat.statistics) {
+      if (!r.stats || r.stats.length <= iREB) continue;
+      const year = r.season?.year ?? 0;
+      if (!best || year > (best.season?.year ?? 0)) best = r;
+    }
+    if (!best?.stats) return null;
+    const orPerGame = parseFloat(best.stats[iOR]);
+    const drPerGame = parseFloat(best.stats[iDR]);
+    const rebPerGame = parseFloat(best.stats[iREB]);
+    if (
+      !Number.isFinite(orPerGame) ||
+      !Number.isFinite(drPerGame) ||
+      !Number.isFinite(rebPerGame) ||
+      rebPerGame <= 0
+    ) {
+      return null;
+    }
+    return { orPerGame, drPerGame, rebPerGame };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Segment fraction — what share of a full game does this PrizePicks segment cover?
+ *   NBA 1Q  → 25% of game time
+ *   NBA 1H/2H → 50% of game time
+ *   WNBA same structure
+ *   NBA full game → 100%
+ *
+ * Used to scale ESPN's full-game per-game averages down to the segment so a
+ * "NBA1Q Points 8.5" line is compared against the player's 1Q-scaled mean,
+ * not their full-game mean. Without this, full-game averages would over-project
+ * a quarter line by 4× and force PP-default fallback.
+ */
+function segmentFractionOf(sport: string): number {
+  const s = sport.toUpperCase();
+  if (s.endsWith("1Q") || s.endsWith("2Q") || s.endsWith("3Q") || s.endsWith("4Q")) return 0.25;
+  if (s.endsWith("1H") || s.endsWith("2H")) return 0.5;
+  return 1.0;
 }
 
 export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
   if (prop.isCombo) return { available: false, reason: "Combo prop — skipped" };
 
-  const extractor = ESPN_BASKETBALL_STATS[prop.statType];
-  if (!extractor) {
-    return { available: false, reason: `No mapping for stat type "${prop.statType}"` };
-  }
-
   const sport = prop.sport.toUpperCase();
   const league: "nba" | "wnba" = sport.startsWith("WNBA") ? "wnba" : "nba";
+  const frac = segmentFractionOf(sport);
 
   const athleteId = await espnFindAthleteId(prop.playerName, league);
   if (!athleteId) {
     return { available: false, reason: `Player "${prop.playerName}" not found in ESPN ${league.toUpperCase()}` };
   }
 
-  const { labels, events } = await espnGameLog(athleteId, league);
+  // ── Special path: OREB / DREB ──
+  // ESPN gamelog only carries total REB. We use the season-average OR/DR split
+  // to derive an OR or DR ratio, then scale each gamelog's total-REB value by
+  // that ratio. That preserves real per-game variance (sigma) while anchoring
+  // the mean to the player's true OR/DR rate — Allen averages ~3.5 OR/game so
+  // a 2.5 OR line should land near 75-80% MORE, not the 50% PrizePicks implied.
+  const isOreb = prop.statType === "Offensive Rebounds";
+  const isDreb = prop.statType === "Defensive Rebounds";
+  if (isOreb || isDreb) {
+    const split = await fetchEspnSeasonRebSplit(athleteId, league);
+    if (!split) {
+      return { available: false, reason: `No season rebound split available for ${prop.playerName}` };
+    }
+    const { labels, events } = await espnGameLog(athleteId, league);
+    if (events.length === 0) {
+      return { available: false, reason: "ESPN returned no games for this player" };
+    }
+    const rebValues = events
+      .map((e) => extractByLabel(e.stats, labels, "REB"))
+      .filter((v) => Number.isFinite(v) && v >= 0);
+    if (rebValues.length < 5) {
+      return { available: false, reason: `Only ${rebValues.length} games — need at least 5` };
+    }
+    const ratio = (isOreb ? split.orPerGame : split.drPerGame) / split.rebPerGame;
+    const seasonMean = isOreb ? split.orPerGame : split.drPerGame;
+    // Scale each total-REB game by the OR (or DR) ratio to get a per-game
+    // OR/DR estimate. Variance from this scaled series is accurate, but the
+    // mean may drift if the gamelog spans multiple seasons. We anchor the
+    // mean to the current season's true OR/DR average — the variance shape
+    // is what we want; the location should match this season.
+    const scaled = rebValues.map((v) => v * ratio);
+    const scaledMean = scaled.reduce((a, b) => a + b, 0) / scaled.length;
+    const shift = seasonMean - scaledMean;
+    const anchored = scaled.map((v) => Math.max(0, v + shift));
+    // Apply segment fraction last (1Q OREB lines compare to a 25%-scaled rebound dist)
+    const segScaled = frac < 1 ? anchored.map((v) => v * frac) : anchored;
+    const labelText = isOreb ? "OREB" : "DREB";
+    const segNote = frac < 1 ? ` · scaled to ${(frac * 100).toFixed(0)}% (${sport})` : "";
+    return buildResult(
+      segScaled,
+      prop.line,
+      `ESPN ${league.toUpperCase()} · ${prop.playerName} (${labelText} avg ${seasonMean.toFixed(1)}, ${(ratio * 100).toFixed(0)}% of REB)${segNote}`,
+      `${league}-espn-${isOreb ? "oreb" : "dreb"}-v1${frac < 1 ? `-${sport.toLowerCase()}` : ""}`,
+    );
+  }
+
+  const extractor = ESPN_BASKETBALL_STATS[prop.statType];
+  if (!extractor) {
+    return { available: false, reason: `No mapping for stat type "${prop.statType}"` };
+  }
+
+  const { labels, events, meta } = await espnGameLog(athleteId, league);
   if (events.length === 0) {
     return { available: false, reason: "ESPN returned no games for this player" };
   }
 
-  const values = events
-    .map((e) => extractor(e.stats, labels))
-    .filter((v) => Number.isFinite(v) && v >= 0);
+  // Build values + parallel arrays for adjustment signals.
+  // We pull opponent, date, AND atVs (home/away marker) from the gamelog so
+  // the home/away + days-rest signals downstream can read them.
+  const chronoValues: number[] = [];
+  const opponents: (string | undefined)[] = [];
+  const dates: (string | undefined)[] = [];
+  const atVsArr: (string | undefined)[] = [];
+  for (const e of events) {
+    let v = extractor(e.stats, labels);
+    if (!Number.isFinite(v) || v < 0) continue;
+    // Segment scaling — for NBA1Q the player's full-game 32 PTS is multiplied
+    // by 0.25 to estimate their 1Q output (~8 PTS). NBA1H × 0.5, etc. Std
+    // scales by the same factor (slight under-estimate of true 1Q std since
+    // within-game minutes vary, but vastly better than the implied 50%).
+    if (frac < 1) v = v * frac;
+    chronoValues.push(v);
+    const m = meta.get(e.eventId);
+    opponents.push(m?.opponentAbbr);
+    dates.push(m?.gameDate);
+    atVsArr.push(m?.atVs);
+  }
+  // Sort chronologically (oldest → newest) so recent-form / days-rest signals see the right order
+  const sortable = chronoValues.map((v, i) => ({ v, opp: opponents[i], d: dates[i], hv: atVsArr[i] }));
+  sortable.sort((a, b) => (a.d ?? "").localeCompare(b.d ?? ""));
+  const sortedValues = sortable.map((s) => s.v);
+  const sortedOpps = sortable.map((s) => s.opp);
+  const sortedDates = sortable.map((s) => s.d);
+  const sortedAtVs = sortable.map((s) => s.hv);
 
-  return buildResult(values, prop.line, `ESPN ${league.toUpperCase()} · ${prop.playerName}`, `${league}-espn-v1`);
+  // Was the player HOME in this prop's game? We compute this server-side in
+  // /api/props from the PrizePicks game-info block (home/away team
+  // abbreviations matched against the player's team), so prop.isHome is
+  // already set when we can be confident. If undefined (cross-sport or no
+  // matchup data), the home/away signal simply doesn't fire.
+  const propIsHome: boolean | undefined = prop.isHome;
+
+  const segNote = frac < 1 ? ` · scaled to ${(frac * 100).toFixed(0)}% (${sport})` : "";
+  const baseline = buildResult(
+    sortedValues,
+    prop.line,
+    `ESPN ${league.toUpperCase()} · ${prop.playerName}${segNote}`,
+    `${league}-espn-v1${frac < 1 ? `-${sport.toLowerCase()}` : ""}`,
+  );
+  if (!baseline.available) return baseline;
+  // narrow to the available branch so applyAdjustments accepts it
+  const available = baseline as RealProjection & { available: true };
+  return applyAdjustments(available, prop.line, {
+    chronoValues: sortedValues,
+    opponents: sortedOpps,
+    atVs: sortedAtVs,
+    dates: sortedDates,
+    propOpponent: prop.opponent,
+    propIsHome,
+    propGameTime: prop.gameTime,
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -367,18 +834,17 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
 export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
   const sport = prop.sport.toUpperCase();
 
-  // Strict matching: only full-game leagues get the real-projection treatment.
-  // Period/quarter/inning variants (NBA4Q, WNBA2H, NHL3P, MLBLIVE, etc.) use
-  // PrizePicks-implied as fallback — a full-season game-log average would
-  // over-project a quarter line by ~4×.
   if (sport === "MLB") {
     return mlbProjection(prop);
   }
-  if (sport === "NBA" || sport === "WNBA") {
+  // NBA/WNBA — full game AND segments (1Q, 1H, 2H, etc.). `nbaProjection`
+  // detects the segment via prop.sport and scales the player's ESPN gamelog
+  // accordingly: 1Q multiplies by 0.25, 1H/2H by 0.5, full game by 1.0.
+  if (sport.startsWith("NBA") || sport.startsWith("WNBA")) {
     return nbaProjection(prop);
   }
   return {
     available: false,
-    reason: `No full-game real model for ${prop.sport} — using PrizePicks implied (period/quarter props always fall back to avoid distorted full-game projections)`,
+    reason: `No real model for ${prop.sport} yet — using PrizePicks's default chance.`,
   };
 }

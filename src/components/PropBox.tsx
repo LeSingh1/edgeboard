@@ -1,10 +1,16 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, Sparkles, User2, Activity } from "lucide-react";
+import { useState, useEffect } from "react";
+import { TrendingUp, TrendingDown, Sparkles, User2, Activity, Flame } from "lucide-react";
 import type { Prop } from "@/lib/types";
 import { useSelectionStore } from "@/stores/selectionStore";
+import { useProjectionStore } from "@/stores/projectionStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
+import { ProjectionBadge } from "@/components/ProjectionBadge";
+import { VariantTabs } from "@/components/VariantTabs";
+import { variantCount, findVariantById, primaryVariant, type VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
 
 export interface PropBoxLiveStat {
@@ -24,6 +30,10 @@ interface PropBoxProps {
   index: number;
   /** Optional live-game stats fetched from ESPN/MLB boxscore. null if game hasn't started. */
   liveStat?: PropBoxLiveStat | null;
+  /** All variants in this family (goblin/standard/demon). When >1, the card shows a swap picker. */
+  variants?: VariantSet;
+  /** Live-stat lookup function — needs the family-level resolver so swapping variants still finds the right boxscore row. */
+  liveStatFor?: (prop: Prop) => PropBoxLiveStat | null;
 }
 
 /**
@@ -36,10 +46,64 @@ interface PropBoxProps {
  *   Line + stat type
  *   MORE / LESS buttons with PrizePicks-implied probability
  */
-export function PropBox({ prop, index, liveStat }: PropBoxProps) {
-  const sideFor = useSelectionStore((s) => s.sideFor);
+export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBoxProps) {
+  const sideForFamily = useSelectionStore((s) => s.sideForFamily);
   const toggle = useSelectionStore((s) => s.toggle);
-  const selected = sideFor(prop.id);
+  const swapVariant = useSelectionStore((s) => s.swapVariant);
+
+  // ── Active variant state ────────────────────────────────────────────
+  // Track the active ladder rung by its propId — that's the only stable
+  // identifier across goblin/std/demon ladders (oddsType alone is ambiguous
+  // when there are 3 goblins and 5 demons in the family).
+  const familySelection = sideForFamily(prop);
+  const initialActivePropId = (() => {
+    // If the family already has a bench selection, mirror that rung
+    if (familySelection && variants) {
+      const match = findVariantById(variants, familySelection.activePropId);
+      if (match) return match.id;
+    }
+    // Otherwise default to the prop the live-board passed us
+    return prop.id;
+  })();
+  const [activePropId, setActivePropId] = useState<string>(initialActivePropId);
+
+  // Sync if upstream selection changes (e.g. another card swap, or PrizePicks
+  // refresh changed propIds). Deferred via microtask to avoid render cascades.
+  useEffect(() => {
+    if (!familySelection || !variants) return;
+    if (familySelection.activePropId !== activePropId) {
+      const target = familySelection.activePropId;
+      queueMicrotask(() => setActivePropId(target));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [familySelection?.activePropId]);
+
+  const activeProp: Prop =
+    (variants && findVariantById(variants, activePropId)) ||
+    (variants && primaryVariant(variants)) ||
+    prop;
+  const selected = familySelection?.activePropId === activeProp.id ? familySelection.side : null;
+  const hasMultipleVariants = variantCount(variants ?? {}) > 1;
+
+  // ── Real projection auto-fetch ──────────────────────────────────────
+  // Trigger the real-projection pipeline (ESPN gamelog → mean/sigma → pMore)
+  // for whatever variant the user is currently looking at. The store has a
+  // concurrency queue (max 3 in-flight), so mounting 30 cards on the live
+  // board just drains over ~5 seconds instead of firing 30 parallel calls.
+  const ballDontLieKey = useSettingsStore((s) => s.ballDontLieKey);
+  const fetchProjection = useProjectionStore((s) => s.fetchOne);
+  const projection = useProjectionStore((s) => s.byProp[activeProp.id]);
+  useEffect(() => {
+    fetchProjection(activeProp, ballDontLieKey);
+  }, [activeProp.id, ballDontLieKey, fetchProjection]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // If the real projection landed, prefer it. Otherwise show PrizePicks-default.
+  const real = projection && projection.available ? projection : null;
+  const effectivePMore = real ? real.pMore : activeProp.pMore;
+  const effectivePLess = real ? real.pLess : activeProp.pLess;
+
+  // If the active variant changed, re-resolve live stats for the new prop
+  const resolvedLiveStat = liveStatFor ? liveStatFor(activeProp) : liveStat ?? null;
 
   const accent = accentHexFor(index);
   const accent2 = accentHexFor(index + 2);
@@ -49,8 +113,14 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
     index % 4 === 0 ? "solid" : index % 4 === 1 ? "dashed" : index % 4 === 2 ? "solid" : "dotted";
   const rotate = (index % 5) - 2;
 
-  const moreP = prop.pMore * 100;
-  const lessP = prop.pLess * 100;
+  // Show percentages ONLY when we have a real projection from the ESPN model.
+  // When we don't, the PrizePicks-implied values (50/40/59%) are just
+  // reverse-engineered guesses — showing them as if they're computed edge
+  // is misleading. The odds type badge already tells the user the line
+  // difficulty; no need to slap a fake "50%" on it.
+  const hasRealProb = !!real;
+  const moreP = hasRealProb ? effectivePMore * 100 : null;
+  const lessP = hasRealProb ? effectivePLess * 100 : null;
 
   // Time chip — if the game isn't today, prefix the day so the user can tell
   // a 7:30 PM tomorrow apart from a 7:30 PM tonight at a glance.
@@ -69,20 +139,30 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
     return `${dayLabel} · ${t}`;
   })();
 
-  // Live-stat rendering metadata
-  const hasLive = !!liveStat;
+  // Live-stat rendering metadata (uses the active variant's line so swapping recolors the strip)
+  const hasLive = !!resolvedLiveStat;
   // Above the line → MORE side is in the money. Color the strip accordingly so
   // the user can scan the board and immediately see which picks are hitting.
-  const liveHitMore = hasLive && liveStat!.value >= prop.line;
+  const liveHitMore = hasLive && resolvedLiveStat!.value >= activeProp.line;
   const liveColor = !hasLive
     ? null
-    : liveStat!.isFinal
+    : resolvedLiveStat!.isFinal
       ? liveHitMore
         ? "#4ADE80" // green — finished above line
         : "#F87171" // red — finished below
       : liveHitMore
         ? "#4ADE80" // currently above line (MORE side already locked if it stays)
         : "#FFB84D"; // currently below — pace-watch
+
+  // Variant swap handler — preserves selection across the swap
+  const onSwapVariant = (newProp: Prop) => {
+    if (newProp.id === activeProp.id) return;
+    // Transfer any existing bench selection to the new variant
+    if (familySelection?.activePropId === activeProp.id) {
+      swapVariant(activeProp.id, newProp, variants);
+    }
+    setActivePropId(newProp.id);
+  };
 
   const initials = prop.playerName
     .split(/\s+/)
@@ -156,14 +236,44 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
 
         {/* ── Header row ── */}
         <div className="relative px-4 pt-4 pb-1 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* League logo — render the PrizePicks SVG as a real image so the
+                multi-color logo (NBA's blue + red + white, MLB's red + blue,
+                etc.) shows up authentically. A CSS mask would collapse the
+                detail down to a single accent color silhouette. */}
+            {prop.leagueIcon ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={prop.leagueIcon}
+                alt={prop.sport}
+                title={prop.sport}
+                className="w-6 h-6 object-contain shrink-0"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  // Fall back to text pill if the asset 404s
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                  const sib = e.currentTarget.nextElementSibling as HTMLElement | null;
+                  sib?.style.removeProperty("display");
+                }}
+              />
+            ) : null}
+            {/* Fallback text pill — shown if image fails OR no leagueIcon */}
             <span
-              className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest border-2 font-[family-name:var(--font-heading)]"
-              style={{ borderColor: accent2, color: accent2 }}
+              className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest border-2 font-[family-name:var(--font-heading)]"
+              style={{
+                borderColor: accent2,
+                color: accent2,
+                display: prop.leagueIcon ? "none" : undefined,
+              }}
             >
               {prop.sport}
             </span>
-            <OddsBadge oddsType={prop.oddsType} compact />
+            {/* Goblin/Demon glyph — icon-only, matches PrizePicks card header */}
+            <OddsBadge oddsType={activeProp.oddsType} iconOnly />
+            {/* Data-source pill — green dot "Real" when ESPN game log resolved,
+                gray "Default" when we couldn't fetch and we're showing the
+                PrizePicks-default 50/40/59%. */}
+            <ProjectionBadge propId={activeProp.id} />
             {prop.isCombo && (
               <span
                 className="rounded-full px-1.5 py-0 text-[8px] font-black uppercase border-2 tracking-widest"
@@ -173,11 +283,20 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
                 Duo
               </span>
             )}
+            {activeProp.trendingCount && activeProp.trendingCount >= 50 && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0 text-[8px] font-black uppercase border-2 tracking-widest border-[#FF6B35] text-[#FF6B35]"
+                title={`${activeProp.trendingCount} users picked this on PrizePicks`}
+              >
+                <Flame size={8} strokeWidth={3} aria-hidden />
+                {activeProp.trendingCount}
+              </span>
+            )}
           </div>
-          {hasLive && !liveStat!.isFinal ? (
+          {hasLive && resolvedLiveStat && !resolvedLiveStat.isFinal ? (
             <span
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#F87171] text-[#0D0D1A] font-[family-name:var(--font-heading)] font-black uppercase text-[9px] tracking-widest whitespace-nowrap"
-              title={`Game in progress — ${liveStat!.periodLabel}`}
+              title={`Game in progress — ${resolvedLiveStat.periodLabel}`}
             >
               <motion.span
                 className="w-1.5 h-1.5 rounded-full bg-[#0D0D1A]"
@@ -185,9 +304,9 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
                 transition={{ duration: 1.2, repeat: Infinity }}
                 aria-hidden
               />
-              Live · {liveStat!.periodLabel}
+              Live · {resolvedLiveStat.periodLabel}
             </span>
-          ) : hasLive && liveStat!.isFinal ? (
+          ) : hasLive && resolvedLiveStat && resolvedLiveStat.isFinal ? (
             <span
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/20 text-white font-[family-name:var(--font-heading)] font-black uppercase text-[9px] tracking-widest whitespace-nowrap"
               title="Game finished — line settles to this value"
@@ -268,27 +387,45 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
           </div>
         </div>
 
-        {/* ── Line + stat ── */}
-        <div className="relative px-4 pt-3 pb-2 mt-auto">
+        {/* ── Line + stat ── (line value flips when user swaps variants) */}
+        <div className="relative px-4 pt-3 pb-1 mt-auto">
           <div
             className="border-t-2 border-dashed mb-2"
             style={{ borderColor: `${accent}50` }}
           />
           <div className="flex items-baseline justify-center gap-2">
-            <div
+            <motion.div
+              key={activeProp.id}
+              initial={{ scale: 0.8, opacity: 0.5 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: "spring", damping: 18 }}
               className="font-[family-name:var(--font-display)] leading-none"
               style={{ color: accent3, fontSize: "2.5rem" }}
             >
-              {prop.line}
-            </div>
+              {activeProp.line}
+            </motion.div>
             <div className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-white">
-              {prop.statType}
+              {activeProp.statType}
             </div>
           </div>
+          {/* Ladder picker — shows every goblin/standard/demon line in the
+              family so the user can pick any rung. PrizePicks ships ladders
+              with 1–5 goblins and 1–5 demons; collapsing to one of each
+              would hide ~80% of the variants for hockey shots, baseball
+              pitches, etc. */}
+          {hasMultipleVariants && variants && (
+            <div className="flex justify-center mt-1.5">
+              <VariantTabs
+                variants={variants}
+                activePropId={activeProp.id}
+                onChange={onSwapVariant}
+              />
+            </div>
+          )}
         </div>
 
         {/* ── Live in-game stat strip ── only shows when the player's game is in progress */}
-        {hasLive && (
+        {hasLive && resolvedLiveStat && (
           <div
             className="relative mx-3 mb-2 px-3 py-1.5 rounded-xl border-2 flex items-center justify-between gap-2"
             style={{
@@ -296,9 +433,9 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
               backgroundColor: `${liveColor}1a`, // ~10% alpha
             }}
             title={
-              liveStat!.isFinal
-                ? `Final · ${liveStat!.value} ${prop.statType}`
-                : `Live · ${liveStat!.value} ${prop.statType} through ${liveStat!.periodLabel}`
+              resolvedLiveStat.isFinal
+                ? `Final · ${resolvedLiveStat.value} ${activeProp.statType}`
+                : `Live · ${resolvedLiveStat.value} ${activeProp.statType} through ${resolvedLiveStat.periodLabel}`
             }
           >
             <span
@@ -306,17 +443,17 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
               style={{ color: liveColor! }}
             >
               <Activity size={10} strokeWidth={3} aria-hidden />
-              {liveStat!.isFinal ? "Final" : "Now"}
+              {resolvedLiveStat.isFinal ? "Final" : "Now"}
             </span>
             <span className="flex items-baseline gap-1">
               <span
                 className="font-[family-name:var(--font-display)] text-lg leading-none"
                 style={{ color: liveColor! }}
               >
-                {liveStat!.value}
+                {resolvedLiveStat.value}
               </span>
               <span className="text-white/40 text-[10px] font-bold">
-                / {prop.line}
+                / {activeProp.line}
               </span>
               {liveHitMore && (
                 <span
@@ -328,68 +465,115 @@ export function PropBox({ prop, index, liveStat }: PropBoxProps) {
                 </span>
               )}
             </span>
-            {liveStat!.homeScore !== undefined && liveStat!.awayScore !== undefined ? (
+            {resolvedLiveStat.homeScore !== undefined && resolvedLiveStat.awayScore !== undefined ? (
               <span className="text-white/50 text-[9px] font-bold whitespace-nowrap">
-                {liveStat!.homeAway === "home"
-                  ? `${liveStat!.homeScore}–${liveStat!.awayScore}`
-                  : `${liveStat!.awayScore}–${liveStat!.homeScore}`}
+                {resolvedLiveStat.homeAway === "home"
+                  ? `${resolvedLiveStat.homeScore}–${resolvedLiveStat.awayScore}`
+                  : `${resolvedLiveStat.awayScore}–${resolvedLiveStat.homeScore}`}
               </span>
             ) : null}
           </div>
         )}
 
-        {/* ── MORE / LESS buttons (PrizePicks-implied probabilities) ── */}
-        <div className="relative px-3 pb-3 pt-1 grid grid-cols-2 gap-2">
-          <motion.button
-            whileHover={{ scale: 1.04 }}
-            whileTap={{ scale: 0.96 }}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggle(prop, "more");
-            }}
-            aria-label={`Pick MORE on ${prop.playerName} ${prop.statType} ${prop.line}, implied ${moreP.toFixed(0)} percent`}
-            aria-pressed={selected === "more"}
-            title={`PrizePicks-implied probability based on ${prop.oddsType} odds_type`}
-            className={cn(
-              "relative rounded-2xl border-4 py-2.5 px-1 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
-              "flex flex-col items-center justify-center gap-0 focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
-              selected === "more"
-                ? "bg-[#4ADE80] border-[#FFE600] text-[#0D0D1A] shadow-[3px_3px_0_#0D0D1A]"
-                : "border-[#4ADE80] text-[#4ADE80] hover:bg-[#4ADE80]/15",
-            )}
-          >
-            <div className="flex items-center gap-1 text-sm">
-              <TrendingUp size={14} strokeWidth={3} aria-hidden />
-              More
-            </div>
-            <span className="text-[9px] opacity-80 font-bold">{moreP.toFixed(0)}%</span>
-          </motion.button>
+        {/* ── MORE / LESS buttons ──
+            PrizePicks rule: demon and goblin lines are MORE-only — the player
+            took on a harder/easier line, you can't bet against it. Only the
+            standard line offers both sides. */}
+        {activeProp.oddsType !== "standard" ? (
+          <div className="relative px-3 pb-3 pt-1">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(activeProp, "more", variants);
+              }}
+              aria-label={`Pick MORE on ${activeProp.playerName} ${activeProp.statType} ${activeProp.line}, ${activeProp.oddsType}${moreP ? `, ${moreP.toFixed(0)} percent chance` : ""}`}
+              aria-pressed={selected === "more"}
+              title={`${activeProp.oddsType === "demon" ? "Demon" : "Goblin"} — MORE only`}
+              className={cn(
+                "relative w-full rounded-2xl border-4 py-3 px-2 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
+                "flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
+                selected === "more"
+                  ? "bg-[#4ADE80] border-[#FFE600] text-[#0D0D1A] shadow-[3px_3px_0_#0D0D1A]"
+                  : "border-[#4ADE80] text-[#4ADE80] hover:bg-[#4ADE80]/15",
+              )}
+            >
+              <TrendingUp size={16} strokeWidth={3} aria-hidden />
+              <span className="text-base">More</span>
+              {moreP !== null && (
+                <span className="text-[10px] opacity-80 font-bold">{moreP.toFixed(0)}%</span>
+              )}
+            </motion.button>
+            <p className="text-[9px] text-white/50 font-bold uppercase tracking-widest text-center mt-1.5">
+              {activeProp.oddsType === "demon" ? "Demon" : "Goblin"} · More only
+            </p>
+          </div>
+        ) : (
+          <div className="relative px-3 pb-3 pt-1 grid grid-cols-2 gap-2">
+            <motion.button
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.96 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(activeProp, "more", variants);
+              }}
+              aria-label={`Pick MORE on ${activeProp.playerName} ${activeProp.statType} ${activeProp.line}${moreP ? `, ${moreP.toFixed(0)} percent chance` : ""}`}
+              aria-pressed={selected === "more"}
+              title={
+                real
+                  ? `Model: ${real.projection} avg from ${real.sampleSize} games`
+                  : "No projection model data yet"
+              }
+              className={cn(
+                "relative rounded-2xl border-4 py-2.5 px-1 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
+                "flex flex-col items-center justify-center gap-0 focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
+                selected === "more"
+                  ? "bg-[#4ADE80] border-[#FFE600] text-[#0D0D1A] shadow-[3px_3px_0_#0D0D1A]"
+                  : "border-[#4ADE80] text-[#4ADE80] hover:bg-[#4ADE80]/15",
+              )}
+            >
+              <div className="flex items-center gap-1 text-sm">
+                <TrendingUp size={14} strokeWidth={3} aria-hidden />
+                More
+              </div>
+              {moreP !== null && (
+                <span className="text-[9px] opacity-80 font-bold">{moreP.toFixed(0)}%</span>
+              )}
+            </motion.button>
 
-          <motion.button
-            whileHover={{ scale: 1.04 }}
-            whileTap={{ scale: 0.96 }}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggle(prop, "less");
-            }}
-            aria-label={`Pick LESS on ${prop.playerName} ${prop.statType} ${prop.line}, implied ${lessP.toFixed(0)} percent`}
-            aria-pressed={selected === "less"}
-            title={`PrizePicks-implied probability based on ${prop.oddsType} odds_type`}
-            className={cn(
-              "relative rounded-2xl border-4 py-2.5 px-1 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
-              "flex flex-col items-center justify-center gap-0 focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
-              selected === "less"
-                ? "bg-[#F87171] border-[#FFE600] text-[#0D0D1A] shadow-[3px_3px_0_#0D0D1A]"
-                : "border-[#F87171] text-[#F87171] hover:bg-[#F87171]/15",
-            )}
-          >
-            <div className="flex items-center gap-1 text-sm">
-              <TrendingDown size={14} strokeWidth={3} aria-hidden />
-              Less
-            </div>
-            <span className="text-[9px] opacity-80 font-bold">{lessP.toFixed(0)}%</span>
-          </motion.button>
-        </div>
+            <motion.button
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.96 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(activeProp, "less", variants);
+              }}
+              aria-label={`Pick LESS on ${activeProp.playerName} ${activeProp.statType} ${activeProp.line}${lessP ? `, ${lessP.toFixed(0)} percent chance` : ""}`}
+              aria-pressed={selected === "less"}
+              title={
+                real
+                  ? `Model: ${real.projection} avg from ${real.sampleSize} games`
+                  : "No projection model data yet"
+              }
+              className={cn(
+                "relative rounded-2xl border-4 py-2.5 px-1 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider transition-all",
+                "flex flex-col items-center justify-center gap-0 focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
+                selected === "less"
+                  ? "bg-[#F87171] border-[#FFE600] text-[#0D0D1A] shadow-[3px_3px_0_#0D0D1A]"
+                  : "border-[#F87171] text-[#F87171] hover:bg-[#F87171]/15",
+              )}
+            >
+              <div className="flex items-center gap-1 text-sm">
+                <TrendingDown size={14} strokeWidth={3} aria-hidden />
+                Less
+              </div>
+              {lessP !== null && (
+                <span className="text-[9px] opacity-80 font-bold">{lessP.toFixed(0)}%</span>
+              )}
+            </motion.button>
+          </div>
+        )}
       </div>
     </motion.div>
   );
