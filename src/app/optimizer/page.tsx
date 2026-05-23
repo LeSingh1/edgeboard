@@ -238,14 +238,24 @@ export default function OptimizerPage() {
           Cart is empty
         </motion.h1>
         <p className="text-white/70 text-lg mt-6">
-          Head back to the live board and tap MORE / LESS on the props you want to ride with.
+          Head back to the live board and tap MORE / LESS on the props you want to ride with —
+          or let Auto-Pilot pick the best ones for you.
         </p>
-        <Link
-          href="/live-board"
-          className="inline-flex items-center gap-2 mt-8 px-8 py-4 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white hover:scale-105 active:scale-95 transition-transform"
-        >
-          To live board <ArrowRight strokeWidth={3} />
-        </Link>
+        <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
+          <Link
+            href="/auto-pilot"
+            className="inline-flex items-center gap-2 px-8 py-4 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white hover:scale-105 active:scale-95 transition-transform"
+          >
+            <Sparkles size={18} strokeWidth={3} />
+            Build me lineups
+          </Link>
+          <Link
+            href="/live-board"
+            className="inline-flex items-center gap-2 px-6 py-4 rounded-full border-4 border-dashed border-white/30 text-white/80 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest hover:bg-white/5 transition-colors"
+          >
+            To live board <ArrowRight strokeWidth={3} />
+          </Link>
+        </div>
       </div>
     );
   }

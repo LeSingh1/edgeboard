@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { LayoutGrid, Settings as SettingsIcon, Sliders, Sparkles, FlaskConical } from "lucide-react";
+import { LayoutGrid, Settings as SettingsIcon, Sliders, Sparkles, FlaskConical, Trophy } from "lucide-react";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { cn } from "@/lib/cn";
 
 const ROUTES = [
   { href: "/live-board", label: "Live Board", icon: LayoutGrid },
+  { href: "/auto-pilot", label: "Auto-Pilot", icon: Trophy },
   { href: "/optimizer", label: "Optimizer", icon: Sliders },
   { href: "/slips", label: "Slips", icon: Sparkles },
   { href: "/model-lab", label: "Model Lab", icon: FlaskConical },
