@@ -33,16 +33,6 @@ export function BenchDrawer() {
             transition={{ type: "spring", damping: 26, stiffness: 240 }}
             className="fixed top-0 right-0 bottom-0 z-50 w-full md:w-[440px] bg-[#0D0D1A] border-l-8 border-[#FFE600] flex flex-col overflow-hidden"
           >
-            <div
-              aria-hidden
-              className="absolute inset-0 pointer-events-none opacity-30"
-              style={{
-                backgroundImage:
-                  "radial-gradient(circle, rgba(255,58,242,0.4) 1px, transparent 1px)",
-                backgroundSize: "20px 20px",
-              }}
-            />
-
             <div className="relative p-6 border-b-4 border-dashed border-[#FF3AF2] flex items-center justify-between">
               <div>
                 <h2 className="font-[family-name:var(--font-display)] text-5xl text-[#FFE600] text-shadow-2 leading-none">
@@ -86,7 +76,7 @@ export function BenchDrawer() {
                       exit={{ opacity: 0, x: 40 }}
                       transition={{ type: "spring", damping: 20 }}
                       className="relative rounded-2xl border-4 p-3 backdrop-blur-sm bg-[#2D1B4E]/60 flex items-center gap-3"
-                      style={{ borderColor: accent, boxShadow: `4px 4px 0 ${accent}` }}
+                      style={{ borderColor: accent }}
                     >
                       {/* Player image or initials */}
                       <div
@@ -145,7 +135,7 @@ export function BenchDrawer() {
                 <Link
                   href="/optimizer"
                   onClick={() => setOpen(false)}
-                  className="relative h-14 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-[4px_4px_0_#FFE600,8px_8px_0_#00F5D4]"
+                  className="relative h-14 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
                 >
                   Optimize · {picks.length} picks →
                 </Link>

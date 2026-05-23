@@ -122,6 +122,16 @@ export async function GET() {
           : undefined;
 
       const line = Number(a.line_score ?? 0);
+
+      // PrizePicks-only filter: real PP lines are always half-points (X.5) so
+      // a pick can never push. Anything that arrives as a whole number (or
+      // missing/zero) is either junk, a stale row, or a sport-specific edge
+      // case we don't ship — drop it before it pollutes the board. Use a
+      // small epsilon to be safe against FP noise.
+      const frac = Math.abs(line - Math.floor(line));
+      const isHalfPoint = Math.abs(frac - 0.5) < 0.001;
+      if (!isHalfPoint) continue;
+
       const statType = (a.stat_display_name as string) ?? (a.stat_type as string) ?? "";
       const id = `pp-${p.id}`;
       const oddsTypeRaw = String(a.odds_type ?? "standard").toLowerCase();
@@ -153,6 +163,10 @@ export async function GET() {
         oddsType,
         isPromo: Boolean(a.is_promo),
         isLive: Boolean(a.is_live),
+        // PrizePicks's own canonical ladder identifier — see Prop type.
+        // Pass through verbatim so our family grouping mirrors PP's own.
+        groupKey: typeof a.group_key === "string" ? a.group_key : undefined,
+        rank: typeof a.rank === "number" ? a.rank : undefined,
         trendingCount: typeof a.trending_count === "number" ? a.trending_count : undefined,
         flashSaleLine: typeof a.flash_sale_line_score === "number" ? a.flash_sale_line_score : null,
         refundable: Boolean(a.refundable),

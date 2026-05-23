@@ -61,19 +61,9 @@ export function SmartSuggest({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="relative rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/10 via-[#7B2FFF]/10 to-[#FF3AF2]/10 backdrop-blur-sm overflow-hidden"
-      style={{ boxShadow: "6px 6px 0 #FF3AF2, 12px 12px 0 #FFE600" }}
+      className="rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/10 via-[#7B2FFF]/10 to-[#FF3AF2]/10 backdrop-blur-sm overflow-hidden"
     >
-      <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none opacity-10"
-        style={{
-          backgroundImage: "radial-gradient(circle, #00F5D4 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-        }}
-      />
-
-      <div className="relative p-6 md:p-8">
+      <div className="p-6 md:p-8">
         <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
           <div className="flex items-center gap-2">
             <Sparkles size={22} strokeWidth={3} className="text-[#00F5D4]" aria-hidden />
@@ -116,17 +106,25 @@ export function SmartSuggest({
         {/* Play-type variety note */}
         <PlayTypeMixSummary recs={result.bySize} />
 
-        {/* Expanded detail panel — shows the actual picks in the focused size's best slip */}
+        {/* Expanded detail panel — shows the actual picks in the focused size's best slip.
+            Guarded: if the underlying recs recomputed (picks changed) and the previously
+            expanded size is no longer present, the find returns undefined — we just don't
+            render rather than crashing on `rec.best`. */}
         <AnimatePresence mode="wait">
-          {expandedSize !== null && (
-            <SuggestDetail
-              key={expandedSize}
-              rec={result.bySize.find((s) => s.size === expandedSize)!}
-              isRecommended={result.recommended?.size === expandedSize}
-              isCurrent={currentSize === expandedSize}
-              onApply={() => onApply(expandedSize)}
-            />
-          )}
+          {(() => {
+            if (expandedSize === null) return null;
+            const expandedRec = result.bySize.find((s) => s.size === expandedSize);
+            if (!expandedRec) return null;
+            return (
+              <SuggestDetail
+                key={expandedSize}
+                rec={expandedRec}
+                isRecommended={result.recommended?.size === expandedSize}
+                isCurrent={currentSize === expandedSize}
+                onApply={() => onApply(expandedSize)}
+              />
+            );
+          })()}
         </AnimatePresence>
       </div>
     </motion.div>
@@ -305,6 +303,9 @@ function SuggestDetail({
   isCurrent: boolean;
   onApply: () => void;
 }) {
+  // Defensive: rec can be undefined if the parent passes a stale lookup result
+  // (e.g. recs recomputed under us). Guard before touching .best.
+  if (!rec) return null;
   const best = rec.best;
   if (!best) return null;
 

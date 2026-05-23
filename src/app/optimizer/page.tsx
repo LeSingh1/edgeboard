@@ -35,6 +35,7 @@ import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { OddsBadge } from "@/components/OddsBadge";
 import { ProjectionBadge } from "@/components/ProjectionBadge";
 import { SmartSuggest } from "@/components/SmartSuggest";
+import { BestSingleSlip } from "@/components/BestSingleSlip";
 import { ProbabilityExplainer } from "@/components/ProbabilityExplainer";
 import { VariantTabs } from "@/components/VariantTabs";
 import { MatchupIntel } from "@/components/MatchupIntel";
@@ -220,18 +221,11 @@ export default function OptimizerPage() {
   // ── Empty cart state ──
   if (N === 0) {
     return (
-      <div className="max-w-2xl mx-auto px-6 py-20 text-center relative">
-        <div
-          aria-hidden
-          className="absolute -top-10 left-1/2 -translate-x-1/2 font-[family-name:var(--font-display)] text-[16rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#FFE600]"
-        >
-          ?
-        </div>
+      <div className="max-w-2xl mx-auto px-6 py-20 text-center">
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           className="mx-auto w-24 h-24 rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 to-[#7B2FFF]/30 flex items-center justify-center mb-6"
-          style={{ boxShadow: "5px 5px 0 #FF3AF2, 10px 10px 0 #00F5D4" }}
         >
           <ShoppingCart size={42} strokeWidth={3} className="text-[#FFE600]" />
         </motion.div>
@@ -256,14 +250,7 @@ export default function OptimizerPage() {
   }
 
   return (
-    <div className="relative max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
-      <div
-        aria-hidden
-        className="absolute -top-10 right-0 font-[family-name:var(--font-display)] text-[12rem] md:text-[18rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#00F5D4]"
-      >
-        GO
-      </div>
-
+    <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
       <motion.h1
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -287,20 +274,9 @@ export default function OptimizerPage() {
         layout
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative rounded-3xl border-8 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/15 via-[#7B2FFF]/15 to-[#00F5D4]/15 backdrop-blur-sm overflow-hidden mb-10"
-        style={{ boxShadow: "8px 8px 0 #FF3AF2, 16px 16px 0 #00F5D4" }}
+        className="rounded-3xl border-8 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/15 via-[#7B2FFF]/15 to-[#00F5D4]/15 backdrop-blur-sm overflow-hidden mb-10"
       >
-        {/* Pattern overlay */}
-        <div
-          aria-hidden
-          className="absolute inset-0 pointer-events-none opacity-15"
-          style={{
-            backgroundImage: "radial-gradient(circle, #FFE600 1px, transparent 1px)",
-            backgroundSize: "32px 32px",
-          }}
-        />
-
-        <div className="relative grid lg:grid-cols-[1fr_400px] gap-0">
+        <div className="grid lg:grid-cols-[1fr_400px] gap-0">
           {/* ── LEFT: editable picks ── */}
           <div className="p-6 md:p-8 lg:border-r-4 lg:border-dashed lg:border-[#FFE600]/40">
             <div className="flex items-center gap-2 mb-4">
@@ -633,6 +609,20 @@ export default function OptimizerPage() {
       </motion.div>
 
       {/* ════════════════════════════════════════════════════════════════
+          SECTION 1.5 — ONE BEST SLIP
+          Collapse the search to a single answer: "which lineup has the
+          highest chance to hit if I'm only playing one tonight?"
+          Hard-coded to "safe" mode regardless of the multi-lineup risk
+          setting so this section's answer is unambiguous.
+          ════════════════════════════════════════════════════════════════ */}
+      <BestSingleSlip
+        selectedProps={selectedProps}
+        entryCost={entry}
+        variantsByPropId={variantsByPropId}
+        filters={filters}
+      />
+
+      {/* ════════════════════════════════════════════════════════════════
           SECTION 2 — Smart suggest (recommendations across all sizes)
           ════════════════════════════════════════════════════════════════ */}
       <div className="mb-10">
@@ -829,8 +819,7 @@ export default function OptimizerPage() {
               key={`${N}-${k}`}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="relative rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 via-[#7B2FFF]/30 to-[#00F5D4]/30 backdrop-blur-sm p-6"
-              style={{ boxShadow: "5px 5px 0 #FF3AF2, 10px 10px 0 #00F5D4" }}
+              className="rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 via-[#7B2FFF]/30 to-[#00F5D4]/30 backdrop-blur-sm p-6"
             >
               <div className="text-white/70 text-[10px] uppercase tracking-widest font-bold">
                 Alternatives the optimizer will rank
@@ -851,7 +840,6 @@ export default function OptimizerPage() {
                 "font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-lg",
                 "flex items-center justify-center gap-3 transition-all",
                 "hover:scale-105 active:scale-95",
-                "shadow-[4px_4px_0_#FFE600,8px_8px_0_#FF3AF2]",
                 "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
                 !running && totalLineups > 0 && "animate-(--animate-pulse-glow)",
               )}

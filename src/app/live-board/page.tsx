@@ -230,14 +230,7 @@ export default function LiveBoardPage() {
     : "—";
 
   return (
-    <div className="relative max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
-      <div
-        aria-hidden
-        className="absolute -top-12 right-0 font-[family-name:var(--font-display)] text-[14rem] md:text-[20rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#FF3AF2]"
-      >
-        BOARD
-      </div>
-
+    <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
       {/* Hero */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -492,7 +485,7 @@ export default function LiveBoardPage() {
           </button>
           <Link
             href="/optimizer"
-            className="relative px-8 py-5 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-base flex items-center gap-3 hover:scale-105 active:scale-95 transition-transform animate-(--animate-pulse-glow) shadow-[6px_6px_0_#FFE600,12px_12px_0_#FF3AF2]"
+            className="relative px-8 py-5 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-base flex items-center gap-3 hover:scale-105 active:scale-95 transition-transform animate-(--animate-pulse-glow)"
           >
             <Sparkles size={20} strokeWidth={3} />
             Optimize · {picks.length}

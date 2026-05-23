@@ -43,14 +43,7 @@ export default function SettingsPage() {
   void clearProjections; // kept for future use
 
   return (
-    <div className="relative max-w-4xl mx-auto px-4 md:px-6 py-8 md:py-12">
-      <div
-        aria-hidden
-        className="absolute -top-10 left-0 font-[family-name:var(--font-display)] text-[14rem] md:text-[20rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#FF6B35]"
-      >
-        SET
-      </div>
-
+    <div className="max-w-4xl mx-auto px-4 md:px-6 py-8 md:py-12">
       <motion.h1
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -194,8 +187,7 @@ export default function SettingsPage() {
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="relative rounded-3xl border-4 border-[#F87171] bg-gradient-to-br from-[#F87171]/15 to-[#FF6B35]/15 backdrop-blur-sm p-6 md:p-8"
-          style={{ boxShadow: "6px 6px 0 #FF6B35" }}
+          className="rounded-3xl border-4 border-[#F87171] bg-gradient-to-br from-[#F87171]/15 to-[#FF6B35]/15 backdrop-blur-sm p-6 md:p-8"
         >
           <div className="flex items-center gap-3 mb-4">
             <div className="w-12 h-12 rounded-xl border-4 border-[#FFE600] bg-[#F87171] flex items-center justify-center">

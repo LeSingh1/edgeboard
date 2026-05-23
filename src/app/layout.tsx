@@ -3,7 +3,6 @@ import { Outfit, DM_Sans, Bangers } from "next/font/google";
 import "./globals.css";
 import { TopNav } from "@/components/TopNav";
 import { BenchDrawer } from "@/components/BenchDrawer";
-import { SparkleField } from "@/components/SparkleField";
 
 const outfit = Outfit({
   variable: "--font-outfit",
@@ -36,8 +35,15 @@ export default function RootLayout({
       lang="en"
       className={`${outfit.variable} ${dmSans.variable} ${bangers.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col app-shell relative overflow-x-hidden">
-        <SparkleField count={9} />
+      {/* suppressHydrationWarning: browser extensions like Grammarly inject
+          `data-new-gr-c-s-check-loaded` / `data-gr-ext-installed` on <body>
+          before React hydrates, which trips the hydration mismatch check.
+          The mismatch is cosmetic (extension attributes, not our HTML) so
+          suppressing on the body is the standard Next.js workaround. */}
+      <body
+        suppressHydrationWarning
+        className="min-h-full flex flex-col app-shell relative overflow-x-hidden"
+      >
         <TopNav />
         <main className="flex-1 relative z-10">{children}</main>
         <BenchDrawer />

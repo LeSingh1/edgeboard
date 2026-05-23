@@ -3,13 +3,14 @@
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
 import { TrendingUp, TrendingDown, Sparkles, User2, Activity, Flame } from "lucide-react";
-import type { Prop } from "@/lib/types";
+import type { Prop, PickSide } from "@/lib/types";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { ProjectionBadge } from "@/components/ProjectionBadge";
 import { VariantTabs } from "@/components/VariantTabs";
+import { PlayerDetailModal } from "@/components/PlayerDetailModal";
 import { variantCount, findVariantById, primaryVariant, type VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
 
@@ -67,6 +68,13 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
   })();
   const [activePropId, setActivePropId] = useState<string>(initialActivePropId);
 
+  // Player detail modal — opens when the user taps the card body (headshot /
+  // name / line region). The MORE/LESS buttons call e.stopPropagation() so
+  // they don't trigger the modal; the modal hosts its own MORE/LESS pill so
+  // the user can toggle from inside it too. Local state because the modal is
+  // 1:1 with this card — multiple cards open is meaningless.
+  const [detailOpen, setDetailOpen] = useState(false);
+
   // Sync if upstream selection changes (e.g. another card swap, or PrizePicks
   // refresh changed propIds). Deferred via microtask to avoid render cascades.
   useEffect(() => {
@@ -84,6 +92,29 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
     prop;
   const selected = familySelection?.activePropId === activeProp.id ? familySelection.side : null;
   const hasMultipleVariants = variantCount(variants ?? {}) > 1;
+
+  // ── Ladder rungs of the same odds type ────────────────────────────────
+  // PrizePicks frequently ships multiple demon (or goblin) lines in one
+  // ladder — e.g. Caruso Points demons at 14.5 / 15.5 / 17.5 / 19.5. Our
+  // family default picks one by trending_count, but the user should be able
+  // to see and pick any rung PP ships. When >1 rung of the active odds type
+  // exists, the line value becomes a tappable cycle button.
+  const sameTypeRungs = (variants?.allRungs ?? []).filter(
+    (p) => p.oddsType === activeProp.oddsType,
+  );
+  const hasLadder = sameTypeRungs.length >= 2;
+  const currentRungIdx = hasLadder
+    ? sameTypeRungs.findIndex((p) => p.id === activeProp.id)
+    : -1;
+  const nextRung = hasLadder
+    ? sameTypeRungs[(currentRungIdx + 1) % sameTypeRungs.length]
+    : null;
+  const rungTypePlural =
+    activeProp.oddsType === "demon"
+      ? "demons"
+      : activeProp.oddsType === "goblin"
+        ? "goblins"
+        : "standard lines";
 
   // ── Real projection auto-fetch ──────────────────────────────────────
   // Trigger the real-projection pipeline (ESPN gamelog → mean/sigma → pMore)
@@ -186,18 +217,21 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
       style={{ zIndex: selected ? 4 : 1 }}
     >
       <div
-        aria-hidden
-        className="absolute inset-0 rounded-3xl transition-all"
-        style={{
-          boxShadow: selected
-            ? `5px 5px 0 ${accent2}, 10px 10px 0 ${accent3}, 0 0 50px ${accent}`
-            : `5px 5px 0 ${accent2}, 10px 10px 0 ${accent3}`,
+        role="button"
+        tabIndex={0}
+        onClick={() => setDetailOpen(true)}
+        onKeyDown={(e) => {
+          // Keyboard parity: Enter or Space opens the modal so the card is
+          // usable without a mouse. We ignore other keys to avoid hijacking
+          // tab navigation.
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setDetailOpen(true);
+          }
         }}
-      />
-
-      <div
+        aria-label={`Open ${activeProp.playerName} ${activeProp.statType} ${activeProp.line} detail`}
         className={cn(
-          "relative h-full rounded-3xl border-4 backdrop-blur-sm bg-[#2D1B4E]/70 overflow-hidden flex flex-col",
+          "relative h-full rounded-3xl border-4 backdrop-blur-sm bg-[#2D1B4E]/70 overflow-hidden flex flex-col transition-all cursor-pointer focus:outline-none focus-visible:ring-4 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D0D1A]",
           selected && "ring-4 ring-offset-2 ring-offset-[#0D0D1A]",
         )}
         style={{
@@ -207,21 +241,6 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
           "--tw-ring-color": accent,
         }}
       >
-        {/* Pattern overlay */}
-        <div
-          aria-hidden
-          className="absolute inset-0 pointer-events-none opacity-10"
-          style={{
-            backgroundImage:
-              index % 3 === 0
-                ? `radial-gradient(circle, ${accent} 1px, transparent 1px)`
-                : index % 3 === 1
-                  ? `repeating-linear-gradient(45deg, transparent, transparent 8px, ${accent2} 8px, ${accent2} 16px)`
-                  : "none",
-            backgroundSize: "20px 20px",
-          }}
-        />
-
         {/* Selected sparkle */}
         {selected && (
           <motion.div
@@ -339,7 +358,7 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
             className="relative w-24 h-24 rounded-full border-4 overflow-hidden bg-[#0D0D1A] flex items-center justify-center"
             style={{
               borderColor: accent,
-              boxShadow: `0 0 18px ${accent}40, 3px 3px 0 ${accent2}`,
+              boxShadow: `0 0 18px ${accent}40`,
             }}
           >
             {prop.playerImage ? (
@@ -394,20 +413,54 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
             style={{ borderColor: `${accent}50` }}
           />
           <div className="flex items-baseline justify-center gap-2">
-            <motion.div
-              key={activeProp.id}
-              initial={{ scale: 0.8, opacity: 0.5 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: "spring", damping: 18 }}
-              className="font-[family-name:var(--font-display)] leading-none"
-              style={{ color: accent3, fontSize: "2.5rem" }}
-            >
-              {activeProp.line}
-            </motion.div>
+            {hasLadder && nextRung ? (
+              <motion.button
+                key={activeProp.id}
+                initial={{ scale: 0.8, opacity: 0.5 }}
+                animate={{ scale: 1, opacity: 1 }}
+                whileHover={{ scale: 1.06 }}
+                whileTap={{ scale: 0.94 }}
+                transition={{ type: "spring", damping: 18 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSwapVariant(nextRung);
+                }}
+                className="font-[family-name:var(--font-display)] leading-none cursor-pointer focus:outline-none rounded-md px-1 transition-colors hover:bg-white/5"
+                style={{ color: accent3, fontSize: "2.5rem" }}
+                aria-label={`Line ${activeProp.line}. ${sameTypeRungs.length} ${rungTypePlural} in this ladder. Tap to cycle to ${nextRung.line}.`}
+                title={`Tap to cycle → ${nextRung.line} (next ${activeProp.oddsType})`}
+              >
+                {activeProp.line}
+              </motion.button>
+            ) : (
+              <motion.div
+                key={activeProp.id}
+                initial={{ scale: 0.8, opacity: 0.5 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: "spring", damping: 18 }}
+                className="font-[family-name:var(--font-display)] leading-none"
+                style={{ color: accent3, fontSize: "2.5rem" }}
+              >
+                {activeProp.line}
+              </motion.div>
+            )}
             <div className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-white">
               {activeProp.statType}
             </div>
           </div>
+          {/* Ladder rung subtitle — only shows when PP ships >1 rung of the
+              active odds type. "Rung 1 of 4 demons · tap to cycle" makes the
+              hidden rungs discoverable. */}
+          {hasLadder && (
+            <div className="text-center mt-1">
+              <span
+                className="text-[9px] font-bold uppercase tracking-widest text-white/55"
+                title={`PrizePicks ships ${sameTypeRungs.length} ${rungTypePlural} for this prop: ${sameTypeRungs.map((p) => p.line).join(" · ")}`}
+              >
+                Rung {currentRungIdx + 1} of {sameTypeRungs.length} {rungTypePlural} · tap line to cycle
+              </span>
+            </div>
+          )}
           {/* Ladder picker — shows every goblin/standard/demon line in the
               family so the user can pick any rung. PrizePicks ships ladders
               with 1–5 goblins and 1–5 demons; collapsing to one of each
@@ -575,6 +628,20 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
           </div>
         )}
       </div>
+
+      {/* Player detail modal — opens on card click. Toggling MORE / LESS
+          inside the modal hits the same selection store as the card buttons,
+          so the bench stays in sync regardless of which surface the user
+          interacted with. */}
+      <PlayerDetailModal
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        prop={activeProp}
+        selectedSide={selected as PickSide | null}
+        onToggleSide={(side) => toggle(activeProp, side, variants)}
+        moreP={moreP}
+        lessP={lessP}
+      />
     </motion.div>
   );
 }

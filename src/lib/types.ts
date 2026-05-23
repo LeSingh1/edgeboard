@@ -34,6 +34,18 @@ export interface Prop {
   isPromo?: boolean;
   isLive?: boolean;
   // ── PrizePicks metadata (passed through as-is) ──
+  /**
+   * PrizePicks's canonical projection family identifier — e.g.
+   * `"188011-106-NBA_game_5wzqFAIAdZaOlCk7XW0fmwwY-11-false"`. Every projection
+   * sharing this string is one ladder of rungs in PrizePicks's own app (the
+   * goblin / standard / demon ladder a user sees when they tap a card).
+   * This is the SOURCE OF TRUTH for grouping props into families — without it
+   * we'd have to guess via `(player, statType, sport)` and risk merging
+   * unrelated promo ladders.
+   */
+  groupKey?: string;
+  /** Sequential ordering PP uses within a group_key — lower rank = higher line. */
+  rank?: number;
   trendingCount?: number;      // Number of users who picked this prop
   flashSaleLine?: number | null; // Flash sale alternate line (if any)
   refundable?: boolean;        // Whether the prop can be refunded

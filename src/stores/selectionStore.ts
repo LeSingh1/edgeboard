@@ -100,11 +100,12 @@ export const useSelectionStore = create<SelectionState>()(
     }),
     {
       name: "edgeboard-selection",
-      version: 5, // back to singular {goblin?, standard?, demon?} — match PrizePicks app's display
+      // v6 switches family grouping from (player, statType, sport) over to
+      // PrizePicks's own `group_key`. Old picks may reference families that
+      // no longer exist — reset rather than try to migrate IDs.
+      version: 6,
       migrate: (persisted, version) => {
-        // v4 stored ladders; v5 stores singular. Reset rather than migrate —
-        // the bench is ephemeral anyway.
-        if (version < 5) return { picks: [], benchOpen: false };
+        if (version < 6) return { picks: [], benchOpen: false };
         return persisted as SelectionState;
       },
     },

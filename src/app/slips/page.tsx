@@ -76,14 +76,7 @@ export default function SlipsPage() {
   const best = lineups[0];
 
   return (
-    <div className="relative max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
-      <div
-        aria-hidden
-        className="absolute -top-10 right-0 font-[family-name:var(--font-display)] text-[14rem] md:text-[20rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#FFE600]"
-      >
-        WIN
-      </div>
-
+    <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -185,20 +178,9 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ type: "spring", damping: 22 }}
-      className="relative rounded-3xl border-8 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 via-[#7B2FFF]/30 to-[#00F5D4]/30 backdrop-blur-sm"
-      style={{ boxShadow: "10px 10px 0 #FF3AF2, 20px 20px 0 #00F5D4" }}
+      className="rounded-3xl border-8 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 via-[#7B2FFF]/30 to-[#00F5D4]/30 backdrop-blur-sm"
     >
-      {/* Pattern overlay */}
-      <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none opacity-20 overflow-hidden rounded-3xl"
-        style={{
-          backgroundImage: "radial-gradient(circle, #FFE600 1px, transparent 1px)",
-          backgroundSize: "30px 30px",
-        }}
-      />
-
-      <div className="relative p-6 md:p-10">
+      <div className="p-6 md:p-10">
         <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-2 mb-2 flex-wrap">

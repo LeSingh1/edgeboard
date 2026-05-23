@@ -64,19 +64,9 @@ export function PortfolioStrategy({ lineups }: PortfolioStrategyProps) {
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="relative rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/15 via-[#7B2FFF]/15 to-[#FFE600]/15 backdrop-blur-sm overflow-hidden mt-10"
-      style={{ boxShadow: "6px 6px 0 #FF3AF2, 12px 12px 0 #FFE600" }}
+      className="rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/15 via-[#7B2FFF]/15 to-[#FFE600]/15 backdrop-blur-sm overflow-hidden mt-10"
     >
-      <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none opacity-15"
-        style={{
-          backgroundImage: "radial-gradient(circle, #00F5D4 1px, transparent 1px)",
-          backgroundSize: "28px 28px",
-        }}
-      />
-
-      <div className="relative p-6 md:p-8">
+      <div className="p-6 md:p-8">
         <div className="flex items-center gap-3 mb-3">
           <div
             className="w-12 h-12 rounded-xl border-4 flex items-center justify-center flex-shrink-0"

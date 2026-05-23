@@ -40,14 +40,7 @@ export default function ModelLabPage() {
   }, []);
 
   return (
-    <div className="relative max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
-      <div
-        aria-hidden
-        className="absolute -top-10 right-0 font-[family-name:var(--font-display)] text-[14rem] md:text-[20rem] leading-none pointer-events-none select-none opacity-[0.06] text-[#7B2FFF]"
-      >
-        LAB
-      </div>
-
+    <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
       <motion.h1
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}

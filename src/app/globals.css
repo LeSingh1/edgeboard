@@ -102,26 +102,24 @@ html, body {
 }
 
 body {
-  /* Global fixed pattern layer 1: dot grid */
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 58, 242, 0.07) 1px, transparent 0);
-  background-size: 28px 28px;
+  /* No global background pattern — the dot grid + diagonal stripes
+     overlay were AI-vibe decoration that competed with content. The
+     ambient color mesh below survives as a subtle scene wash. */
+  background-image: none;
 }
 
-/* Global pattern layer 2: diagonal stripes (overlay via ::before on a wrapper) */
+/* Diagonal-stripe overlay removed (AI slop). Kept the .app-shell::after
+   color mesh below since it's an ambient gradient wash, not a repeating
+   pattern. */
 .app-shell::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  background-image: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 14px,
-    rgba(255, 230, 0, 0.04) 14px,
-    rgba(255, 230, 0, 0.04) 28px
-  );
+  background-image: none;
+  background: transparent;
+  display: none;
 }
 
 .app-shell::after {

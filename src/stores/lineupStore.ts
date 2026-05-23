@@ -15,6 +15,13 @@ interface LineupState {
     playType: PlayType;
     entryCost: number;
     riskMode: RiskMode;
+    /**
+     * Optional hard cap on total dollars across all played lineups. When set,
+     * the slips page divides this by the recommended-portfolio size to show
+     * a per-lineup stake suggestion: "your $100 → $20 × 5 lineups."
+     * 0 / undefined means "no cap, use entryCost × N."
+     */
+    maxBudget?: number;
   } | null;
   /** Tracked status per lineup id; survives navigation + reload. */
   statuses: Record<string, SlipStatus>;
