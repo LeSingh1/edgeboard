@@ -147,6 +147,31 @@ function gameKey(p: Prop): string {
   return `${pair}::${(p.sport ?? "").toUpperCase()}::${day}`;
 }
 
+/**
+ * PrizePicks lineup-validity rule: every entered lineup must include players
+ * from at least 2 different teams. A 4-pick slip of all-Cavaliers picks, for
+ * example, is not enterable on PP regardless of how strong each individual
+ * pick is. We treat this as a hard filter (drop the lineup entirely) rather
+ * than a soft correlation penalty.
+ *
+ * Combo props (e.g. "Donovan Mitchell + Jalen Brunson") report a single
+ * `team` so they count as one team here — same as PP's own behavior.
+ *
+ * Returns true when the lineup is enterable, false when it would be
+ * rejected at the PP entry screen.
+ */
+export function meetsTeamDiversity(props: Prop[]): boolean {
+  const teams = new Set<string>();
+  for (const p of props) {
+    const t = (p.team ?? "").trim().toUpperCase();
+    if (t) teams.add(t);
+  }
+  // Lineups with no team data at all (e.g. PGA / esports where `team` is
+  // empty) are exempt — the PP rule is NBA / team-sport flavored.
+  if (teams.size === 0) return true;
+  return teams.size >= 2;
+}
+
 export function correlationRisk(props: Prop[]): "low" | "medium" | "high" {
   const players = props.map((p) => p.playerName);
   if (new Set(players).size < players.length) return "high";
@@ -357,6 +382,10 @@ export function optimize({
   // positions are pinned to MORE. This shrinks the search space and keeps
   // every emitted lineup actually enterable on PrizePicks.
   for (const combo of combinations(selectedProps, lineupSize)) {
+    // Hard skip: PrizePicks rejects lineups that don't span ≥2 different
+    // teams. We bail before any variant / side enumeration so we don't waste
+    // work computing payouts on an unenterable combo.
+    if (!meetsTeamDiversity(combo)) continue;
     for (const variantCombo of variantAssignments(combo, (p) => variantOptions(p, variantsByPropId))) {
       // Indices in variantCombo whose side is the user's choice (standard only)
       const freeIdx: number[] = [];

@@ -16,6 +16,7 @@ import {
   X as XIcon,
   ShoppingCart,
   Sparkles,
+  AlertTriangle,
 } from "lucide-react";
 import { useEffect } from "react";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -30,6 +31,7 @@ import {
   correlationRisk,
   detectReversion,
   oddsPayoutFactor,
+  meetsTeamDiversity,
 } from "@/lib/optimizer";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { OddsBadge } from "@/components/OddsBadge";
@@ -606,6 +608,31 @@ export default function OptimizerPage() {
           </div>
         </div>
       </motion.div>
+
+      {/* PrizePicks rule warning — when the entire bench is one team, PP
+          will reject the lineup at entry. Surface this loudly so the user
+          doesn't waste a "Generate" run that returns nothing. */}
+      {N >= 2 && !meetsTeamDiversity(selectedProps) && (
+        <motion.div
+          layout
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-2xl border-4 border-[#F87171] bg-[#F87171]/10 p-4 md:p-5 mb-10 flex items-start gap-3"
+          role="alert"
+        >
+          <AlertTriangle size={22} strokeWidth={3} className="text-[#F87171] flex-shrink-0 mt-0.5" aria-hidden />
+          <div>
+            <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm text-[#F87171]">
+              PrizePicks won&apos;t accept this slip
+            </div>
+            <p className="text-white/75 text-sm mt-1">
+              Every PP lineup needs players from at least 2 different teams. All
+              of your bench picks are on the same team right now — add one from
+              another team to make it enterable.
+            </p>
+          </div>
+        </motion.div>
+      )}
 
       {/* ════════════════════════════════════════════════════════════════
           SECTION 1.5 — ONE BEST SLIP

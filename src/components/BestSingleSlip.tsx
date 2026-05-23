@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, ArrowRight, TrendingUp, TrendingDown, Trophy, Target } from "lucide-react";
-import { recommendLineups } from "@/lib/optimizer";
+import { recommendLineups, meetsTeamDiversity } from "@/lib/optimizer";
 import { useLineupStore } from "@/stores/lineupStore";
 import type { Prop, RiskMode } from "@/lib/types";
 import type { VariantSet } from "@/lib/variantGroups";
@@ -67,10 +67,14 @@ export function BestSingleSlip({
     return result.recommended?.best ?? null;
   }, [selectedProps, entryCost, variantsByPropId, filters]);
 
-  // Empty state — fewer than 2 picks means no lineup is possible. Render a
-  // skeleton card with a hint so the section doesn't pop in/out as picks
-  // are added.
+  // Empty state — pick apart the reason so the user knows what to do.
+  // The optimizer can return null because:
+  //   1. Fewer than 2 picks on the bench
+  //   2. Bench has 2+ picks but they all share a single team — PrizePicks
+  //      rejects same-team-only lineups, so no valid slip exists.
   if (!best) {
+    const tooFew = selectedProps.length < 2;
+    const sameTeamOnly = !tooFew && !meetsTeamDiversity(selectedProps);
     return (
       <motion.section
         layout
@@ -85,10 +89,19 @@ export function BestSingleSlip({
             One best slip
           </h2>
         </div>
-        <p className="text-white/55 text-sm">
-          Add 2 or more picks to your bench and we&apos;ll find the single lineup
-          with the highest chance to hit.
-        </p>
+        {sameTeamOnly ? (
+          <p className="text-white/65 text-sm">
+            <span className="text-[#F87171] font-bold">PrizePicks rule:</span>{" "}
+            every lineup needs players from at least 2 different teams. Your
+            bench is all one team right now — add a pick from another team to
+            unlock a valid slip.
+          </p>
+        ) : (
+          <p className="text-white/55 text-sm">
+            Add 2 or more picks to your bench and we&apos;ll find the single lineup
+            with the highest chance to hit.
+          </p>
+        )}
       </motion.section>
     );
   }
