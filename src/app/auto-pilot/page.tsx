@@ -15,8 +15,9 @@ import {
   Filter,
   Loader2,
   AlertTriangle,
+  Wand2,
 } from "lucide-react";
-import { buildAutoLineups, type AutoPilotResult } from "@/lib/autoPilot";
+import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { OddsBadge } from "@/components/OddsBadge";
@@ -27,6 +28,17 @@ import type { LeagueSummary, Prop } from "@/lib/types";
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
 const LINEUP_COUNTS = [1, 2, 3, 4, 5] as const;
+
+/**
+ * Defaults used whenever a control is left on "auto":
+ *   count → 3   (gives variety without being overwhelming)
+ *   size  → resolved at run-time by pickAutoSize() against the live board
+ *   entry → $20 (PrizePicks median single-slip ticket)
+ *   sport → ALL (no filter — auto = "we choose")
+ */
+const AUTO_COUNT_DEFAULT = 3;
+const AUTO_ENTRY_DEFAULT = 20;
+type AutoOr<T> = "auto" | T;
 
 interface ApiResponse {
   props: Prop[];
@@ -44,13 +56,35 @@ export default function AutoPilotPage() {
   const [loadingBoard, setLoadingBoard] = useState(true);
   const [boardError, setBoardError] = useState<string | null>(null);
 
-  // Controls
-  const [lineupCount, setLineupCount] = useState<number>(3);
-  const [lineupSize, setLineupSize] = useState<number>(4);
-  const [entry, setEntry] = useState<number>(20);
-  const [sport, setSport] = useState<string>("ALL");
+  // Controls — every knob can be left on "auto" so the user can hand the
+  // whole decision (or any subset) to the algorithm.
+  const [lineupCount, setLineupCount] = useState<AutoOr<number>>("auto");
+  const [lineupSize, setLineupSize] = useState<AutoOr<number>>("auto");
+  const [entry, setEntry] = useState<AutoOr<number>>("auto");
+  const [sport, setSport] = useState<AutoOr<string>>("auto");
   const [crunching, setCrunching] = useState(false);
   const [result, setResult] = useState<AutoPilotResult | null>(null);
+  /** What the algorithm actually picked when controls were on auto.
+   *  Stored alongside the result so the UI can say "we chose 4-pick at $20". */
+  const [resolvedParams, setResolvedParams] = useState<{
+    lineupCount: number;
+    lineupSize: number;
+    entry: number;
+    sport: string;
+  } | null>(null);
+
+  const allAuto =
+    lineupCount === "auto" &&
+    lineupSize === "auto" &&
+    entry === "auto" &&
+    sport === "auto";
+
+  const setAllAuto = () => {
+    setLineupCount("auto");
+    setLineupSize("auto");
+    setEntry("auto");
+    setSport("auto");
+  };
 
   // Fetch the board on mount. Same endpoint the live-board uses — already
   // cached for 5 min upstream, so this is cheap.
@@ -77,10 +111,11 @@ export default function AutoPilotPage() {
   }, []);
 
   // How many props are available in the current sport filter — drives the
-  // pre-flight number so the user knows what pool we're searching.
+  // pre-flight number so the user knows what pool we're searching. `auto`
+  // and explicit `ALL` both mean "no filter", so they're equivalent here.
   const filteredCount = useMemo(() => {
     if (!board) return 0;
-    if (sport === "ALL") return board.total;
+    if (sport === "auto" || sport === "ALL") return board.total;
     return board.props.filter((p) => p.sport === sport).length;
   }, [board, sport]);
 
@@ -95,11 +130,32 @@ export default function AutoPilotPage() {
     setCrunching(true);
     // Yield a frame so the spinner can paint before the math kicks off.
     await new Promise((r) => setTimeout(r, 50));
-    const r = buildAutoLineups(board.props, lineupSize, lineupCount, entry, {
-      sport,
+
+    // Resolve every "auto" knob to a concrete value. Size is the only one
+    // that costs anything to resolve — pickAutoSize sweeps 2..6 against the
+    // live board to find the size with the best expected dollars.
+    const resolvedSport = sport === "auto" ? "ALL" : sport;
+    const optionsForSizing = {
+      sport: resolvedSport,
       realProjections: byProp,
-    });
+    };
+    const resolved = {
+      lineupCount: lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount,
+      lineupSize:
+        lineupSize === "auto" ? pickAutoSize(board.props, optionsForSizing) : lineupSize,
+      entry: entry === "auto" ? AUTO_ENTRY_DEFAULT : entry,
+      sport: resolvedSport,
+    };
+
+    const r = buildAutoLineups(
+      board.props,
+      resolved.lineupSize,
+      resolved.lineupCount,
+      resolved.entry,
+      { sport: resolved.sport, realProjections: byProp },
+    );
     setResult(r);
+    setResolvedParams(resolved);
     setCrunching(false);
   };
 
@@ -107,15 +163,15 @@ export default function AutoPilotPage() {
   // leaderboard view — same shape the Optimizer page uses, so /slips
   // renders them without any special-casing.
   const handleSendToSlips = () => {
-    if (!result || result.lineups.length === 0) return;
+    if (!result || result.lineups.length === 0 || !resolvedParams) return;
     setLineupResults({
       lineups: result.lineups,
       totalGenerated: result.totalEvaluated,
       elapsedMs: result.elapsedMs,
       params: {
-        lineupSize,
+        lineupSize: resolvedParams.lineupSize,
         playType: result.lineups[0]?.playType ?? "power",
-        entryCost: entry,
+        entryCost: resolvedParams.entry,
         riskMode: "safe",
       },
     });
@@ -176,12 +232,66 @@ export default function AutoPilotPage() {
       </motion.div>
 
       {/* ════════════════════════════════════════════════════════════
+          MASTER "ALL AUTO" CTA
+          The fastest path through this page: leave every knob on Auto and
+          hit the button. The card calls that out at the top, and when the
+          user IS in all-auto state we show a "live" highlight so they know.
+          ════════════════════════════════════════════════════════════ */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className={cn(
+          "mt-8 rounded-3xl border-4 p-4 md:p-5 flex flex-wrap items-center gap-4 transition-colors",
+          allAuto
+            ? "border-[#FFE600] bg-gradient-to-r from-[#FF3AF2]/20 via-[#7B2FFF]/20 to-[#00F5D4]/20"
+            : "border-dashed border-white/20 bg-[#2D1B4E]/30",
+        )}
+      >
+        <div
+          className={cn(
+            "w-12 h-12 rounded-2xl border-4 flex items-center justify-center flex-shrink-0",
+            allAuto ? "border-[#FFE600] bg-[#FFE600] text-[#0D0D1A]" : "border-[#FFE600]/60 text-[#FFE600]",
+          )}
+        >
+          <Wand2 size={20} strokeWidth={3} />
+        </div>
+        <div className="flex-1 min-w-[200px]">
+          <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm md:text-base text-white">
+            {allAuto ? "All auto — just hit the button" : "Or skip the decisions"}
+          </div>
+          <div className="text-white/65 text-xs mt-0.5">
+            {allAuto
+              ? "We'll choose the count, size, sport, and entry for you."
+              : "Set every control to Auto and we'll pick the best of everything."}
+          </div>
+        </div>
+        <button
+          onClick={setAllAuto}
+          disabled={allAuto}
+          className={cn(
+            "px-5 py-3 rounded-full border-4 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest transition-all",
+            allAuto
+              ? "border-[#FFE600]/40 text-[#FFE600]/50 cursor-default"
+              : "border-[#FFE600] text-[#FFE600] hover:bg-[#FFE600]/10",
+          )}
+        >
+          {allAuto ? "All auto ✓" : "Set all to Auto"}
+        </button>
+      </motion.div>
+
+      {/* ════════════════════════════════════════════════════════════
           CONTROLS
           ════════════════════════════════════════════════════════════ */}
-      <div className="grid lg:grid-cols-[1fr_360px] gap-8 mt-10">
+      <div className="grid lg:grid-cols-[1fr_360px] gap-8 mt-6">
         <div className="space-y-5">
           <ControlCard title="How many lineups?" icon={Trophy} accent="#FFE600" accent2="#FF3AF2">
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3 items-center">
+              <AutoPill
+                active={lineupCount === "auto"}
+                accent="#FFE600"
+                onClick={() => setLineupCount("auto")}
+              />
               {LINEUP_COUNTS.map((n) => (
                 <button
                   key={n}
@@ -198,13 +308,24 @@ export default function AutoPilotPage() {
               ))}
             </div>
             <p className="text-white/55 text-xs mt-3">
-              We&apos;ll return your top {lineupCount} {lineupCount === 1 ? "slip" : "slips"} — distinct
-              picks where possible so it isn&apos;t the same lineup five times.
+              {lineupCount === "auto" ? (
+                <>Auto — we&apos;ll give you {AUTO_COUNT_DEFAULT} distinct slips.</>
+              ) : (
+                <>
+                  We&apos;ll return your top {lineupCount}{" "}
+                  {lineupCount === 1 ? "slip" : "slips"} — distinct picks where possible.
+                </>
+              )}
             </p>
           </ControlCard>
 
           <ControlCard title="Picks per lineup" icon={Layers} accent="#00F5D4" accent2="#7B2FFF">
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3 items-center">
+              <AutoPill
+                active={lineupSize === "auto"}
+                accent="#00F5D4"
+                onClick={() => setLineupSize("auto")}
+              />
               {LINEUP_SIZES.map((s) => (
                 <button
                   key={s}
@@ -221,16 +342,27 @@ export default function AutoPilotPage() {
               ))}
             </div>
             <p className="text-white/55 text-xs mt-3">
-              Smaller slips hit more often but pay less. {lineupSize}-pick base payout:{" "}
-              <span className="text-[#FFE600] font-bold">
-                {POWER_BASE[lineupSize as keyof typeof POWER_BASE] ?? "—"}×
-              </span>{" "}
-              on Power.
+              {lineupSize === "auto" ? (
+                <>Auto — we&apos;ll sweep 2–6 picks and pick the size with the highest avg $.</>
+              ) : (
+                <>
+                  Smaller slips hit more often but pay less. {lineupSize}-pick base payout:{" "}
+                  <span className="text-[#FFE600] font-bold">
+                    {POWER_BASE[lineupSize as keyof typeof POWER_BASE] ?? "—"}×
+                  </span>{" "}
+                  on Power.
+                </>
+              )}
             </p>
           </ControlCard>
 
           <ControlCard title="Entry cost" icon={TrendingUp} accent="#FF6B35" accent2="#FFE600">
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3 items-center">
+              <AutoPill
+                active={entry === "auto"}
+                accent="#FF6B35"
+                onClick={() => setEntry("auto")}
+              />
               {ENTRY_PRESETS.map((p) => (
                 <button
                   key={p}
@@ -247,16 +379,34 @@ export default function AutoPilotPage() {
               ))}
               <input
                 type="number"
-                value={entry}
-                onChange={(e) => setEntry(Math.max(1, Math.min(1000, Number(e.target.value) || 0)))}
-                className="w-20 h-12 rounded-full border-4 border-dashed border-[#FFE600] bg-transparent px-3 font-[family-name:var(--font-heading)] font-black text-center text-white focus:outline-none focus:bg-[#FFE600]/10"
+                value={entry === "auto" ? "" : entry}
+                placeholder={entry === "auto" ? `$${AUTO_ENTRY_DEFAULT}` : undefined}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setEntry("auto");
+                    return;
+                  }
+                  setEntry(Math.max(1, Math.min(1000, Number(v) || 0)));
+                }}
+                className="w-20 h-12 rounded-full border-4 border-dashed border-[#FFE600] bg-transparent px-3 font-[family-name:var(--font-heading)] font-black text-center text-white placeholder:text-white/30 focus:outline-none focus:bg-[#FFE600]/10"
               />
             </div>
+            {entry === "auto" && (
+              <p className="text-white/55 text-xs mt-3">
+                Auto — defaults to ${AUTO_ENTRY_DEFAULT} per slip.
+              </p>
+            )}
           </ControlCard>
 
           {leagueOptions.length > 1 && (
             <ControlCard title="Sport filter" icon={Filter} accent="#7B2FFF" accent2="#00F5D4">
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 items-center">
+                <AutoPill
+                  active={sport === "auto"}
+                  accent="#7B2FFF"
+                  onClick={() => setSport("auto")}
+                />
                 {leagueOptions.map((lg, i) => {
                   const active = sport === lg.name;
                   const accent = accentHexFor(i);
@@ -279,6 +429,11 @@ export default function AutoPilotPage() {
                   );
                 })}
               </div>
+              {sport === "auto" && (
+                <p className="text-white/55 text-xs mt-3">
+                  Auto — no sport filter, pulls from every league on the board.
+                </p>
+              )}
             </ControlCard>
           )}
         </div>
@@ -295,14 +450,36 @@ export default function AutoPilotPage() {
               <div className="text-white/70 text-[10px] uppercase tracking-widest font-bold">
                 You&apos;ll get back
               </div>
-              <div className="font-[family-name:var(--font-display)] text-6xl text-[#FFE600] leading-none mt-1 text-shadow-2">
-                {lineupCount}
+              <div className="font-[family-name:var(--font-display)] text-6xl text-[#FFE600] leading-none mt-1 text-shadow-2 flex items-baseline gap-2">
+                {lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount}
+                {lineupCount === "auto" && (
+                  <span className="font-[family-name:var(--font-heading)] text-xs uppercase tracking-widest text-[#FFE600]/80 font-black">
+                    auto
+                  </span>
+                )}
               </div>
               <div className="text-white/70 text-xs mt-2">
-                slips · {lineupSize} picks each · ${entry} entry
+                slips ·{" "}
+                {lineupSize === "auto" ? (
+                  <span className="text-[#00F5D4] font-bold">auto</span>
+                ) : (
+                  lineupSize
+                )}{" "}
+                picks each ·{" "}
+                {entry === "auto" ? (
+                  <span className="text-[#FF6B35] font-bold">auto</span>
+                ) : (
+                  <>${entry}</>
+                )}{" "}
+                entry
               </div>
               <div className="text-white/50 text-[10px] uppercase tracking-widest font-bold mt-3">
-                Max if all hit · ${(entry * (POWER_BASE[lineupSize as keyof typeof POWER_BASE] ?? 0) * lineupCount).toFixed(0)} total
+                Sport ·{" "}
+                {sport === "auto" ? (
+                  <span className="text-[#7B2FFF]">auto</span>
+                ) : (
+                  sport
+                )}
               </div>
             </motion.div>
 
@@ -322,10 +499,16 @@ export default function AutoPilotPage() {
                 <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
                   <Sliders size={22} strokeWidth={3} />
                 </motion.span>
+              ) : allAuto ? (
+                <Wand2 size={22} strokeWidth={3} />
               ) : (
                 <Sparkles size={22} strokeWidth={3} />
               )}
-              {crunching ? "Hunting picks..." : "Build my lineups"}
+              {crunching
+                ? "Hunting picks..."
+                : allAuto
+                  ? "Surprise me"
+                  : "Build my lineups"}
             </button>
             <p className="text-center text-white/50 text-xs">
               Ranked by chance to hit · ties broken by avg $ per play.
@@ -371,12 +554,36 @@ export default function AutoPilotPage() {
               )}
             </div>
 
+            {/* "We chose" summary — only shown when at least one knob was on
+                Auto, so the user sees what the algorithm resolved each
+                auto-value to without having to scroll back up. */}
+            {resolvedParams && (
+              <ResolvedSummary
+                resolved={resolvedParams}
+                wasAuto={{
+                  count: lineupCount === "auto",
+                  size: lineupSize === "auto",
+                  entry: entry === "auto",
+                  sport: sport === "auto",
+                }}
+              />
+            )}
+
             {result.lineups.length === 0 ? (
-              <EmptyResult lineupSize={lineupSize} pool={result.poolSize} sport={sport} />
+              <EmptyResult
+                lineupSize={resolvedParams?.lineupSize ?? 4}
+                pool={result.poolSize}
+                sport={resolvedParams?.sport ?? "ALL"}
+              />
             ) : (
               <div className="grid gap-5">
                 {result.lineups.map((l, i) => (
-                  <LineupCard key={l.id} lineup={l} index={i} entry={entry} />
+                  <LineupCard
+                    key={l.id}
+                    lineup={l}
+                    index={i}
+                    entry={resolvedParams?.entry ?? l.entryCost}
+                  />
                 ))}
               </div>
             )}
@@ -409,6 +616,41 @@ const POWER_BASE: Record<number, number> = {
   5: 20,
   6: 25,
 };
+
+/**
+ * Auto pill — the "AUTO" chip that lives at the head of every control row.
+ * Active state matches the card's accent color so it reads as one of the
+ * options, not a separate widget.
+ */
+function AutoPill({
+  active,
+  accent,
+  onClick,
+}: {
+  active: boolean;
+  accent: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Let us pick this for you"
+      className={cn(
+        "h-12 px-4 rounded-2xl border-4 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest transition-all flex items-center gap-1.5",
+        active ? "shadow-[3px_3px_0_#FF3AF2]" : "hover:opacity-90",
+      )}
+      style={{
+        borderColor: active ? "#FF3AF2" : accent,
+        background: active ? accent : "transparent",
+        color: active ? "#0D0D1A" : accent,
+      }}
+    >
+      <Wand2 size={13} strokeWidth={3} />
+      Auto
+    </button>
+  );
+}
 
 function ControlCard({
   title,
@@ -600,6 +842,63 @@ function Stat({
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * Compact strip shown above the lineup list whenever any control was on
+ * Auto. Each chip shows the resolved value with a wand icon on the ones
+ * that were actually chosen by the algorithm. When nothing was on auto,
+ * the parent simply doesn't render this.
+ */
+function ResolvedSummary({
+  resolved,
+  wasAuto,
+}: {
+  resolved: { lineupCount: number; lineupSize: number; entry: number; sport: string };
+  wasAuto: { count: boolean; size: boolean; entry: boolean; sport: boolean };
+}) {
+  const anyAuto = wasAuto.count || wasAuto.size || wasAuto.entry || wasAuto.sport;
+  if (!anyAuto) return null;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mb-6 rounded-2xl border-2 border-dashed border-[#FFE600]/40 bg-[#FFE600]/5 p-3 md:p-4 flex flex-wrap items-center gap-2 md:gap-3"
+    >
+      <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px] text-[#FFE600] flex items-center gap-1.5">
+        <Wand2 size={12} strokeWidth={3} />
+        We chose
+      </span>
+      <ResolvedChip label={`${resolved.lineupCount} ${resolved.lineupCount === 1 ? "slip" : "slips"}`} auto={wasAuto.count} accent="#FFE600" />
+      <ResolvedChip label={`${resolved.lineupSize}-pick`} auto={wasAuto.size} accent="#00F5D4" />
+      <ResolvedChip label={`$${resolved.entry}`} auto={wasAuto.entry} accent="#FF6B35" />
+      <ResolvedChip label={resolved.sport === "ALL" ? "All sports" : resolved.sport} auto={wasAuto.sport} accent="#7B2FFF" />
+    </motion.div>
+  );
+}
+
+function ResolvedChip({
+  label,
+  auto,
+  accent,
+}: {
+  label: string;
+  auto: boolean;
+  accent: string;
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase text-[10px] tracking-widest"
+      style={{
+        borderColor: accent,
+        color: auto ? "#0D0D1A" : accent,
+        background: auto ? accent : "transparent",
+      }}
+    >
+      {auto && <Wand2 size={10} strokeWidth={3} />}
+      {label}
+    </span>
   );
 }
 

@@ -143,6 +143,36 @@ function selectDiverse(lineups: Lineup[], k: number, size: number): Lineup[] {
 }
 
 /**
+ * Sweep lineup sizes 2..6 with a small pool and pick the one whose top
+ * lineup has the highest expected dollars ($-payout × hit-prob). Used by
+ * the page when the user leaves "picks per lineup" on Auto.
+ *
+ * Each size is fast (the optimizer caps the pool per `poolCapFor`), so the
+ * whole sweep finishes in well under a second on a typical board.
+ */
+export function pickAutoSize(
+  allProps: Prop[],
+  options: AutoPilotOptions = {},
+): number {
+  let bestSize = 4;
+  let bestScore = -Infinity;
+  for (const size of [2, 3, 4, 5, 6]) {
+    const r = buildAutoLineups(allProps, size, 1, 20, { ...options, diversify: false });
+    const top = r.lineups[0];
+    if (!top) continue;
+    // Expected gross dollars at $20 entry. Picks the size with the highest
+    // long-run $-per-slip — naturally smaller for thin boards (less variance),
+    // larger when there's enough material to support a big multiplier.
+    const score = top.hitProbability * top.grossPayout - 20;
+    if (score > bestScore) {
+      bestScore = score;
+      bestSize = size;
+    }
+  }
+  return bestSize;
+}
+
+/**
  * Score → top pool → optimize → diversity → return top K. See module header
  * for tradeoffs.
  */
