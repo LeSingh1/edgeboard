@@ -43,7 +43,6 @@ import { variantCount, type VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { RiskMode, Prop } from "@/lib/types";
 
-const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const RISK_MODES: { id: RiskMode; label: string; icon: typeof Shield; desc: string }[] = [
   { id: "safe",       label: "Safe",       icon: Shield, desc: "Highest chance of hitting" },
@@ -642,36 +641,6 @@ export default function OptimizerPage() {
           ════════════════════════════════════════════════════════════════ */}
       <div className="grid lg:grid-cols-[1fr_360px] gap-8">
         <div className="space-y-5">
-          <ControlCard title="Lineup size" icon={Sliders} accent="#FF3AF2" accent2="#FFE600">
-            <p className="text-white/60 text-xs mb-3">
-              The optimizer generates all sub-combinations of this size from your {N} picks (over/under combos
-              included).
-            </p>
-            <div className="flex flex-wrap gap-3">
-              {LINEUP_SIZES.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSize(s)}
-                  disabled={s > N}
-                  className={cn(
-                    "w-14 h-14 rounded-2xl border-4 font-[family-name:var(--font-heading)] font-black text-2xl transition-all",
-                    s === size
-                      ? "bg-[#FFE600] border-[#FF3AF2] text-[#0D0D1A] scale-110 shadow-[3px_3px_0_#FF3AF2]"
-                      : s > N
-                        ? "border-white/10 text-white/20 cursor-not-allowed"
-                        : "border-[#FF3AF2] text-white hover:bg-[#FF3AF2]/20",
-                  )}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-            <p className="text-white/60 text-xs mt-3">
-              Power Play multiplier at size {k}:{" "}
-              <span className="text-[#FFE600] font-black">{POWER_MULTIPLIERS[k] ?? 0}×</span>
-            </p>
-          </ControlCard>
-
           <ControlCard title="Play type" icon={Zap} accent="#00F5D4" accent2="#FF3AF2">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl border-4 border-[#00F5D4] bg-[#00F5D4]/10 flex items-center justify-center flex-shrink-0">
