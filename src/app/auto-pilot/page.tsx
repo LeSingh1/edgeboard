@@ -475,40 +475,48 @@ function LineupCard({
       className="rounded-3xl border-4 bg-[#0D0D1A]/70 backdrop-blur-sm overflow-hidden"
       style={{ borderColor: accent, boxShadow: `5px 5px 0 ${accent2}` }}
     >
-      {/* Header row */}
+      {/* Header — title row, then a stat strip below. On desktop the
+          stat strip flattens into one row via `md:contents`, which lets the
+          title and stats sit on the same grid line. */}
       <div
-        className="grid grid-cols-[auto_1fr] md:grid-cols-[auto_1fr_auto_auto_auto] gap-3 md:gap-5 p-5 items-center border-b-4 border-dashed"
+        className="grid gap-3 md:gap-5 p-5 items-center border-b-4 border-dashed md:grid-cols-[auto_1fr_auto_auto_auto]"
         style={{ borderColor: `${accent}55` }}
       >
-        <div
-          className="w-12 h-12 rounded-2xl flex items-center justify-center font-[family-name:var(--font-display)] text-2xl text-[#0D0D1A]"
-          style={{ background: accent }}
-        >
-          #{index + 1}
-        </div>
-        <div className="min-w-0">
-          <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-xs text-white/55">
-            {lineup.picks.length}-pick · {lineup.playType === "power" ? "Power (all hit)" : "Flex (partial OK)"}
+        <div className="flex items-center gap-3 md:contents">
+          <div
+            className="w-12 h-12 rounded-2xl flex items-center justify-center font-[family-name:var(--font-display)] text-2xl text-[#0D0D1A] flex-shrink-0"
+            style={{ background: accent }}
+          >
+            #{index + 1}
           </div>
-          <div className="text-white text-sm mt-0.5">
-            {lineup.payoutMultiplier.toFixed(2)}× payout · pays{" "}
-            <span className="text-[#00F5D4] font-bold">${lineup.grossPayout.toFixed(0)}</span> if it lands
+          <div className="min-w-0 flex-1">
+            <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-xs text-white/55">
+              {lineup.picks.length}-pick · {lineup.playType === "power" ? "Power (all hit)" : "Flex (partial OK)"}
+            </div>
+            <div className="text-white text-sm mt-0.5">
+              {lineup.payoutMultiplier.toFixed(2)}× payout · pays{" "}
+              <span className="text-[#00F5D4] font-bold">${lineup.grossPayout.toFixed(0)}</span> if it lands
+            </div>
           </div>
         </div>
 
-        <Stat label="Hit %" accent={pctColor}>
-          <AnimatedPercent value={lineup.hitProbability} decimals={1} className="font-[family-name:var(--font-display)] text-3xl md:text-4xl leading-none" />
-        </Stat>
-        <Stat label="Avg $" accent={evColor}>
-          <span style={{ color: evColor }} className="font-[family-name:var(--font-display)] text-3xl md:text-4xl leading-none">
-            {lineup.expectedValue >= 0 ? "+" : ""}${lineup.expectedValue.toFixed(2)}
-          </span>
-        </Stat>
-        <Stat label="Pays" accent="#FFE600">
-          <span className="font-[family-name:var(--font-display)] text-3xl md:text-4xl text-white leading-none">
-            ${lineup.grossPayout.toFixed(0)}
-          </span>
-        </Stat>
+        {/* Mobile: 3-column stat strip below the title. Desktop: each Stat
+            lands in its own grid column thanks to the `md:contents` above. */}
+        <div className="grid grid-cols-3 gap-2 md:contents">
+          <Stat label="Hit %" accent={pctColor}>
+            <AnimatedPercent value={lineup.hitProbability} decimals={1} className="font-[family-name:var(--font-display)] text-2xl md:text-4xl leading-none" />
+          </Stat>
+          <Stat label="Avg $" accent={evColor}>
+            <span style={{ color: evColor }} className="font-[family-name:var(--font-display)] text-2xl md:text-4xl leading-none">
+              {lineup.expectedValue >= 0 ? "+" : ""}${lineup.expectedValue.toFixed(2)}
+            </span>
+          </Stat>
+          <Stat label="Pays" accent="#FFE600">
+            <span className="font-[family-name:var(--font-display)] text-2xl md:text-4xl text-white leading-none">
+              ${lineup.grossPayout.toFixed(0)}
+            </span>
+          </Stat>
+        </div>
       </div>
 
       {/* Picks */}
@@ -529,15 +537,15 @@ function LineupCard({
                 {i + 1}
               </span>
               <div className="min-w-0">
-                <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-tight text-white text-sm md:text-base truncate">
+                <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-tight text-white text-sm md:text-base leading-tight">
                   {p.prop.playerName}
                 </div>
-                <div className="text-white/55 text-[11px] uppercase tracking-widest font-bold flex items-center gap-1.5 flex-wrap">
+                <div className="text-white/55 text-[10px] md:text-[11px] uppercase tracking-widest font-bold flex items-center gap-1 md:gap-1.5 flex-wrap mt-0.5">
                   <span>{p.prop.statType}</span>
                   <span>·</span>
                   <span className="text-white/75">{isMore ? "More" : "Less"} {p.prop.line}</span>
-                  <span>·</span>
-                  <span>{p.prop.sport}</span>
+                  <span className="hidden md:inline">·</span>
+                  <span className="hidden md:inline">{p.prop.sport}</span>
                   {p.prop.oddsType !== "standard" && (
                     <>
                       <span>·</span>
