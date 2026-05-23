@@ -1,12 +1,12 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, ArrowRight, TrendingUp, TrendingDown, Trophy, Target } from "lucide-react";
+import { Sparkles, ArrowRight, TrendingUp, TrendingDown, Trophy, Target, Zap, Layers } from "lucide-react";
 import { recommendLineups, meetsTeamDiversity } from "@/lib/optimizer";
 import { useLineupStore } from "@/stores/lineupStore";
-import type { Prop, RiskMode } from "@/lib/types";
+import type { PlayType, Prop, RiskMode } from "@/lib/types";
 import type { VariantSet } from "@/lib/variantGroups";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
@@ -52,20 +52,80 @@ export function BestSingleSlip({
   const router = useRouter();
   const setResults = useLineupStore((s) => s.setResults);
 
-  // recommendLineups already does the cross-size search; we hard-code "safe"
-  // (highest hit %) and pick the recommended lineup across all valid sizes.
-  // It's pure / deterministic from inputs, so useMemo is appropriate.
-  const best = useMemo(() => {
+  // Per-card overrides — the user can pin a specific lineup size or play
+  // type, or leave both on "auto" to let the optimizer choose. Defaults
+  // are "auto" / "auto", which reproduces the original single-answer
+  // behavior. Forced choices that can't be honored (e.g. flex on a
+  // 2-pick) fall back to power so we never render an empty card.
+  const [sizeOverride, setSizeOverride] = useState<number | "auto">("auto");
+  const [playOverride, setPlayOverride] = useState<PlayType | "auto">("auto");
+
+  // recommendLineups already runs the cross-size + cross-play search and
+  // returns best-Power / best-Flex per size, so flipping overrides costs
+  // nothing — we just pick a different entry from the same result.
+  const result = useMemo(() => {
     if (selectedProps.length < 2) return null;
-    const result = recommendLineups({
+    return recommendLineups({
       selectedProps,
       entryCost,
       riskMode: "safe" as RiskMode,
       variantsByPropId,
       filters,
     });
-    return result.recommended?.best ?? null;
   }, [selectedProps, entryCost, variantsByPropId, filters]);
+
+  // List of sizes the optimizer found a valid lineup for. Powers the
+  // size-pill row — disabled sizes are still rendered (so the bar doesn't
+  // jump) but they can't be selected.
+  const availableSizes = useMemo(
+    () => (result ? result.bySize.filter((s) => s.best !== null).map((s) => s.size) : []),
+    [result],
+  );
+
+  // ── Derive "effective" overrides during render rather than snapping the
+  // underlying state via effects (which would cascade-render and fight
+  // the react-hooks/set-state-in-effect rule). If the user pinned a size
+  // that's no longer valid (e.g. they removed a pick), the pill UI shows
+  // the effective value and the resolution falls back to auto. The raw
+  // pinned state is preserved so re-adding the pick restores their pin.
+  const effectiveSizeOverride: number | "auto" =
+    sizeOverride !== "auto" && availableSizes.includes(sizeOverride)
+      ? sizeOverride
+      : "auto";
+
+  // Resolve the displayed lineup by walking the override matrix.
+  const best = useMemo(() => {
+    if (!result) return null;
+    // 1. Pick which size's recommendation we're looking at.
+    const sizeRec =
+      effectiveSizeOverride === "auto"
+        ? result.recommended
+        : result.bySize.find((s) => s.size === effectiveSizeOverride) ?? result.recommended;
+    if (!sizeRec) return null;
+    // 2. Within that size, honor the play-type override.
+    if (playOverride === "power" && sizeRec.bestPower) return sizeRec.bestPower;
+    if (playOverride === "flex" && sizeRec.bestFlex) return sizeRec.bestFlex;
+    return sizeRec.best;
+  }, [result, effectiveSizeOverride, playOverride]);
+
+  // Determine which play types are actually available for the currently
+  // chosen size — Flex only exists for size ≥ 3 and when a valid Flex
+  // lineup was generated. This drives whether the Flex button is
+  // selectable.
+  const flexAvailable = useMemo(() => {
+    if (!result) return false;
+    const sizeRec =
+      effectiveSizeOverride === "auto"
+        ? result.recommended
+        : result.bySize.find((s) => s.size === effectiveSizeOverride);
+    return !!(sizeRec && sizeRec.bestFlex);
+  }, [result, effectiveSizeOverride]);
+
+  // Same trick for play-type — show the effective value, keep the pin
+  // around so it re-engages when the size changes back to one that
+  // supports Flex.
+  const effectivePlayOverride: PlayType | "auto" =
+    playOverride === "flex" && !flexAvailable ? "auto" : playOverride;
 
   // Empty state — pick apart the reason so the user knows what to do.
   // The optimizer can return null because:
@@ -106,7 +166,6 @@ export function BestSingleSlip({
     );
   }
 
-  const hitPct = best.hitProbability * 100;
   // Color cue — green ≥ 25%, yellow ≥ 10%, red below. Matches the rest of
   // the app's traffic-light convention.
   const pctColor =
@@ -161,10 +220,77 @@ export function BestSingleSlip({
               One best slip
             </h2>
             <p className="text-white/65 text-sm mt-2 max-w-xl">
-              We crunched every combination of your {selectedProps.length} picks across every variant ladder. This
-              <span className="text-[#00F5D4] font-bold"> {best.picks.length}-pick {best.playType} slip </span>
-              has the highest chance to hit.
+              We crunched every combination of your {selectedProps.length} picks across every variant ladder. Right now we&apos;re showing the
+              <span className="text-[#00F5D4] font-bold"> {best.picks.length}-pick {best.playType} slip</span>
+              {effectiveSizeOverride === "auto" && effectivePlayOverride === "auto"
+                ? " with the highest chance to hit"
+                : " you picked below"}
+              . Mix and match size + play type to see your other options.
             </p>
+          </div>
+        </div>
+
+        {/* ── Override controls: size + play type ──
+            Both default to "Auto" (whatever recommendLineups picked). The
+            user can pin a specific size and/or play type to compare. Pills
+            for sizes that have no valid lineup (or play types that aren't
+            available, e.g. Flex on 2-pick) are visibly disabled but stay in
+            the layout so the row doesn't reflow. */}
+        <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+          {/* Size row */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-white/55 text-[10px] uppercase tracking-widest font-bold">
+              Size
+            </span>
+            <PillToggle
+              active={effectiveSizeOverride === "auto"}
+              onClick={() => setSizeOverride("auto")}
+              label="Auto"
+              accent="#00F5D4"
+            />
+            {[2, 3, 4, 5, 6].map((s) => {
+              const available = availableSizes.includes(s);
+              return (
+                <PillToggle
+                  key={s}
+                  active={effectiveSizeOverride === s}
+                  disabled={!available}
+                  onClick={() => available && setSizeOverride(s)}
+                  label={`${s}-pick`}
+                  accent="#00F5D4"
+                />
+              );
+            })}
+          </div>
+
+          {/* Play type row */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-white/55 text-[10px] uppercase tracking-widest font-bold">
+              Play
+            </span>
+            <PillToggle
+              active={effectivePlayOverride === "auto"}
+              onClick={() => setPlayOverride("auto")}
+              label="Auto"
+              accent="#FFE600"
+            />
+            <PillToggle
+              active={effectivePlayOverride === "power"}
+              onClick={() => setPlayOverride("power")}
+              icon={<Zap size={11} strokeWidth={3} aria-hidden />}
+              label="Power"
+              accent="#7B2FFF"
+              hint="All picks must hit. Bigger payout, no safety net."
+            />
+            <PillToggle
+              active={effectivePlayOverride === "flex"}
+              disabled={!flexAvailable}
+              onClick={() => flexAvailable && setPlayOverride("flex")}
+              icon={<Layers size={11} strokeWidth={3} aria-hidden />}
+              label="Flex"
+              accent="#00F5D4"
+              hint={flexAvailable ? "Partial hits still pay (e.g. 3/4 wins)." : "Flex needs at least 3 picks in the slip."}
+            />
           </div>
         </div>
       </div>
@@ -174,8 +300,11 @@ export function BestSingleSlip({
         <Stat
           label="Hit %"
           value={
+            // AnimatedPercent expects 0..1 — it multiplies by 100 internally.
+            // Previously we passed hitProbability * 100, which double-scaled
+            // (showed 9612.6% instead of 96.1%).
             <span style={{ color: pctColor }} className="block">
-              <AnimatedPercent value={hitPct} className="font-[family-name:var(--font-display)] text-4xl md:text-6xl leading-none" />
+              <AnimatedPercent value={best.hitProbability} className="font-[family-name:var(--font-display)] text-4xl md:text-6xl leading-none" />
             </span>
           }
           accent={pctColor}
@@ -330,5 +459,53 @@ function Stat({
         <div className="text-white/50 text-[10px] mt-1.5 font-bold">{sub}</div>
       )}
     </div>
+  );
+}
+
+/**
+ * Compact pill button used in the size / play-type override rows. Active
+ * pills fill with their accent color; disabled pills stay in flow but
+ * are visibly muted and non-interactive.
+ */
+function PillToggle({
+  active,
+  disabled = false,
+  onClick,
+  label,
+  icon,
+  accent,
+  hint,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  label: string;
+  icon?: React.ReactNode;
+  accent: string;
+  hint?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border-2 px-3 py-1 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px] transition-all",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D0D1A]",
+        active && "scale-105",
+        disabled && "opacity-30 cursor-not-allowed",
+        !disabled && !active && "hover:bg-white/5",
+      )}
+      style={{
+        borderColor: disabled ? "rgba(255,255,255,0.15)" : accent,
+        color: active ? "#0D0D1A" : disabled ? "rgba(255,255,255,0.4)" : accent,
+        background: active ? accent : "transparent",
+      }}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

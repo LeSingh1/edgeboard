@@ -489,6 +489,14 @@ export interface SizeRecommendation {
   /** Auto-chosen play type for this size's winning lineup. */
   playType: PlayType;
   best: Lineup | null;          // top lineup of this size
+  /** Best lineup at this size if play type is forced to Power. May equal
+   *  `best` when Power was already the auto choice; null when no valid
+   *  Power lineup exists (e.g. all variants disqualify combos). */
+  bestPower: Lineup | null;
+  /** Best lineup at this size if play type is forced to Flex. null for
+   *  size < 3 (Flex isn't available below 3-pick) or when no valid Flex
+   *  lineup exists. */
+  bestFlex: Lineup | null;
   totalEvaluated: number;       // total lineups generated
   countPositiveEv: number;      // how many of those are +EV
   countAboveMinHit: number;     // how many clear the min-hit-% filter
@@ -541,6 +549,11 @@ export function recommendLineups({
       filters,
     });
     const best = r.lineups[0] ?? null;
+    // Per-play-type best so the UI can flip between Power and Flex without
+    // re-running optimize(). The lineups list is already sorted by the
+    // mode's criterion, so .find() returns the best of that play type.
+    const bestPower = r.lineups.find((l) => l.playType === "power") ?? null;
+    const bestFlex = r.lineups.find((l) => l.playType === "flex") ?? null;
     const countPositiveEv = r.lineups.filter((l) => l.expectedValue > 0).length;
     const countAboveMinHit = filters?.minHitProb
       ? r.lineups.filter((l) => l.hitProbability >= filters.minHitProb!).length
@@ -549,6 +562,8 @@ export function recommendLineups({
       size,
       playType: best?.playType ?? "power",
       best,
+      bestPower,
+      bestFlex,
       totalEvaluated: r.totalGenerated,
       countPositiveEv,
       countAboveMinHit,

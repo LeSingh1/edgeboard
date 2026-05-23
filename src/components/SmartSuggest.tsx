@@ -88,7 +88,7 @@ export function SmartSuggest({
             const isCurrent = currentSize === rec.size;
             const isExpanded = expandedSize === rec.size;
             return (
-              <SuggestCard
+              <SuggestCardWithToggle
                 key={rec.size}
                 rec={rec}
                 isRecommended={isRec}
@@ -131,28 +131,68 @@ export function SmartSuggest({
   );
 }
 
-/** Tiny pill that names the auto-chosen play type for a lineup (Power vs Flex). */
-function PlayTypePill({ playType, compact = true }: { playType: PlayType; compact?: boolean }) {
+/** Tiny pill that names the play type for a lineup (Power vs Flex).
+ *  When `onCycle` is provided, becomes a clickable button that cycles
+ *  Auto → Power → Flex → Auto so the user can override the auto choice
+ *  on a per-card basis. The label gets a small "(forced)" marker so it's
+ *  obvious the user overrode the optimizer. */
+function PlayTypePill({
+  playType,
+  compact = true,
+  override,
+  flexAvailable,
+  onCycle,
+}: {
+  playType: PlayType;
+  compact?: boolean;
+  /** Current override state. "auto" = whatever recommendLineups chose. */
+  override?: PlayType | "auto";
+  /** Whether Flex is a valid option (size ≥ 3 + a valid Flex lineup exists). */
+  flexAvailable?: boolean;
+  /** When provided, the pill becomes a button. Cycles play-type override. */
+  onCycle?: (e: React.MouseEvent) => void;
+}) {
   const isPower = playType === "power";
-  return (
-    <span
-      title={
-        isPower
-          ? "Power — every pick must hit. Bigger payout, no safety net."
-          : "Flex — partial hits still pay (e.g. 3/4 wins). Smaller multipliers."
-      }
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest",
-        compact ? "px-1.5 py-0 text-[8px]" : "px-2 py-0.5 text-[10px]",
-      )}
-      style={{
-        borderColor: isPower ? "#7B2FFF" : "#00F5D4",
-        color: isPower ? "#7B2FFF" : "#00F5D4",
-        background: isPower ? "rgba(123,47,255,0.12)" : "rgba(0,245,212,0.12)",
-      }}
-    >
+  const isForced = override !== undefined && override !== "auto";
+  const baseClass = cn(
+    "inline-flex items-center gap-1 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest transition-colors",
+    compact ? "px-1.5 py-0 text-[8px]" : "px-2 py-0.5 text-[10px]",
+    onCycle && "cursor-pointer hover:brightness-125",
+  );
+  const style = {
+    borderColor: isPower ? "#7B2FFF" : "#00F5D4",
+    color: isPower ? "#7B2FFF" : "#00F5D4",
+    background: isPower ? "rgba(123,47,255,0.12)" : "rgba(0,245,212,0.12)",
+  };
+  const title = onCycle
+    ? `Click to switch — auto / power / flex${!flexAvailable ? " (flex needs 3+ picks)" : ""}`
+    : isPower
+      ? "Power — every pick must hit. Bigger payout, no safety net."
+      : "Flex — partial hits still pay (e.g. 3/4 wins). Smaller multipliers.";
+  const inner = (
+    <>
       {isPower ? <Zap size={9} strokeWidth={3} aria-hidden /> : <Layers size={9} strokeWidth={3} aria-hidden />}
       {isPower ? "Power" : "Flex"}
+      {isForced && <span aria-hidden className="ml-0.5 opacity-60">·</span>}
+    </>
+  );
+  if (onCycle) {
+    return (
+      <button
+        type="button"
+        onClick={onCycle}
+        aria-label={`Play type: ${isPower ? "Power" : "Flex"}${isForced ? " (forced)" : " (auto)"}. Click to cycle.`}
+        title={title}
+        className={baseClass}
+        style={style}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <span title={title} className={baseClass} style={style}>
+      {inner}
     </span>
   );
 }
@@ -179,6 +219,50 @@ function PlayTypeMixSummary({ recs }: { recs: SizeRecommendation[] }) {
   );
 }
 
+/**
+ * Card wrapper that holds the per-card play-type override state. The user
+ * can click the play-type pill to flip between Power and Flex; the card
+ * re-reads `rec.bestPower` / `rec.bestFlex` (already computed by
+ * recommendLineups) so flipping is free — no re-optimization.
+ *
+ * "Auto" leaves the choice to recommendLineups. "Power" / "Flex" forces.
+ * If the forced play type has no valid lineup (e.g. Flex on a 2-pick),
+ * the card falls back to `auto` so we never render an empty card.
+ */
+function SuggestCardWithToggle(props: {
+  rec: SizeRecommendation;
+  isRecommended: boolean;
+  isCurrent: boolean;
+  isExpanded: boolean;
+  accent: string;
+  accent2: string;
+  onToggle: () => void;
+  onApply: () => void;
+}) {
+  const { rec } = props;
+  const [override, setOverride] = useState<PlayType | "auto">("auto");
+
+  // Resolve which lineup to display based on the override.
+  let displayed: SizeRecommendation = rec;
+  if (override === "power" && rec.bestPower) {
+    displayed = { ...rec, best: rec.bestPower, playType: "power" };
+  } else if (override === "flex" && rec.bestFlex) {
+    displayed = { ...rec, best: rec.bestFlex, playType: "flex" };
+  }
+
+  // Flex is only valid for size 3+. Power is always valid.
+  const flexAvailable = rec.size >= 3 && rec.bestFlex !== null;
+
+  const cyclePlayType = (e: React.MouseEvent) => {
+    e.stopPropagation(); // don't toggle the expansion panel
+    if (override === "auto") setOverride("power");
+    else if (override === "power") setOverride(flexAvailable ? "flex" : "auto");
+    else setOverride("auto");
+  };
+
+  return <SuggestCard {...props} rec={displayed} override={override} flexAvailable={flexAvailable} onCyclePlayType={cyclePlayType} />;
+}
+
 function SuggestCard({
   rec,
   isRecommended,
@@ -188,6 +272,9 @@ function SuggestCard({
   accent2,
   onToggle,
   onApply,
+  override,
+  flexAvailable,
+  onCyclePlayType,
 }: {
   rec: SizeRecommendation;
   isRecommended: boolean;
@@ -197,6 +284,9 @@ function SuggestCard({
   accent2: string;
   onToggle: () => void;
   onApply: () => void;
+  override: PlayType | "auto";
+  flexAvailable: boolean;
+  onCyclePlayType: (e: React.MouseEvent) => void;
 }) {
   const best = rec.best;
   if (!best) {
@@ -228,7 +318,9 @@ function SuggestCard({
       aria-pressed={isExpanded}
       aria-label={`${rec.size}-pick ${rec.playType}: ${(best.hitProbability * 100).toFixed(1)} percent chance of hitting, ${best.expectedValue.toFixed(2)} dollars average per play. ${isRecommended ? "Recommended pick." : ""} Tap to see which picks are in this slip; double-tap to apply.`}
       className={cn(
-        "relative rounded-2xl border-4 p-3 text-left cursor-pointer overflow-hidden",
+        // overflow-visible — the "PICK" badge sits at -top-2 -right-2 and
+        // would clip otherwise. Padding-top reserves space for the badge.
+        "relative rounded-2xl border-4 pt-4 px-3 pb-3 text-left cursor-pointer",
         "focus:outline-none focus:ring-4 focus:ring-offset-2 focus:ring-offset-[#0D0D1A]",
         isCurrent && "ring-4 ring-[#FFE600] ring-offset-2 ring-offset-[#0D0D1A]",
       )}
@@ -245,7 +337,7 @@ function SuggestCard({
       }}
     >
       {isRecommended && (
-        <span className="absolute -top-2 -right-2 bg-[#FFE600] text-[#0D0D1A] rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 border-[#0D0D1A]">
+        <span className="absolute -top-2 right-2 bg-[#FFE600] text-[#0D0D1A] rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 border-[#0D0D1A] z-10">
           Pick
         </span>
       )}
@@ -253,7 +345,12 @@ function SuggestCard({
         <span className="text-[10px] uppercase tracking-widest font-bold text-white/60">
           {rec.size}-pick
         </span>
-        <PlayTypePill playType={rec.playType} />
+        <PlayTypePill
+          playType={rec.playType}
+          override={override}
+          flexAvailable={flexAvailable}
+          onCycle={onCyclePlayType}
+        />
         <ChevronDown
           size={14}
           strokeWidth={3}
