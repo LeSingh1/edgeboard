@@ -32,6 +32,8 @@ import {
   detectReversion,
   oddsPayoutFactor,
   meetsTeamDiversity,
+  poissonBinomial,
+  FLEX_PAYOUT_TABLES,
 } from "@/lib/optimizer";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { OddsBadge } from "@/components/OddsBadge";
@@ -145,16 +147,41 @@ export default function OptimizerPage() {
   const N = selectedProps.length;
   const slipSize = Math.min(Math.max(N, 2), 6);
 
-  // ── Live slip math (uses real projections when available, implied otherwise)
+  // ── Live slip math (uses real projections when available, implied otherwise).
+  // Two probabilities:
+  //   - slipHitProb  → P(all N hit) — Power Play mode, must-hit-everything.
+  //   - flexHitProb  → P(at least minTier hit) — Flex mode partial-pay floor.
+  // Auto-Pilot displays the Flex number on Flex slips, the Optimizer displays
+  // the Power number by default. The mismatch was confusing the user when they
+  // generated a slip in Auto-Pilot (Flex 96%) and saw the same picks in the
+  // Optimizer (Power 22%). We surface BOTH now so the comparison is honest.
+  const probsPatched = useMemo(
+    () =>
+      picks.map((p, i) => {
+        const patched = selectedProps[i] ?? p.prop;
+        return p.side === "more" ? patched.pMore : patched.pLess;
+      }),
+    [picks, selectedProps],
+  );
   const slipHitProb = useMemo(() => {
     if (N === 0) return 0;
-    const probs = picks.map((p, i) => {
-      const patched = selectedProps[i] ?? p.prop;
-      return p.side === "more" ? patched.pMore : patched.pLess;
-    });
-    const pIndependent = probs.reduce((a, b) => a * b, 1);
+    const pIndependent = probsPatched.reduce((a, b) => a * b, 1);
     return applyCorrelationPenalty(pIndependent, selectedProps);
-  }, [picks, selectedProps, N]);
+  }, [probsPatched, selectedProps, N]);
+  const flexHitProb = useMemo(() => {
+    // Flex is only available for size ≥ 3 on PrizePicks.
+    if (N < 3) return null;
+    const table = FLEX_PAYOUT_TABLES[Math.min(N, 6)];
+    if (!table || table.length === 0) return null;
+    const minTier = Math.min(...table.map((t) => t.hits));
+    // P(at least minTier hits) under independence — Poisson Binomial DP.
+    const dist = poissonBinomial(probsPatched);
+    let pAtLeast = 0;
+    for (let k = minTier; k < dist.length; k++) pAtLeast += dist[k];
+    // Apply the same correlation penalty we use on the Power number so the
+    // two figures are computed on a like-for-like basis.
+    return applyCorrelationPenalty(pAtLeast, selectedProps);
+  }, [probsPatched, selectedProps, N]);
   const slipCorrRisk = useMemo(() => correlationRisk(selectedProps), [selectedProps]);
   const reversion = useMemo(() => detectReversion(selectedProps), [selectedProps]);
 
@@ -446,7 +473,7 @@ export default function OptimizerPage() {
           {/* ── RIGHT: hit-probability counter ── */}
           <div className="relative p-6 md:p-8 flex flex-col items-center justify-center text-center">
             <div className="text-[#FFE600] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-xs mb-2">
-              Hit Probability
+              Power Hit %
             </div>
 
             <motion.div
@@ -465,16 +492,49 @@ export default function OptimizerPage() {
             </motion.div>
 
             <div className="mt-4 text-white/70 text-sm">
-              if all {N} picks land as configured
+              if all {N} picks land — Power Play mode
             </div>
 
-            {/* Explainer: how this number was calculated */}
+            {/* Flex equivalent — same picks, but pays partial. For 6-picks
+                you only need 4 to hit, which is way more likely. We show
+                this so users coming from Auto-Pilot don't think the number
+                changed; they're just looking at two different scoring rules
+                on the same picks. */}
+            {flexHitProb !== null && (
+              <div
+                className="mt-3 rounded-xl border-2 border-[#00F5D4]/40 bg-[#00F5D4]/5 px-3 py-2 text-xs"
+                title="PrizePicks Flex pays you when at least the minimum tier of picks hit (e.g. 4 of 6). Same picks, more forgiving scoring."
+              >
+                <span className="text-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px]">
+                  Flex
+                </span>
+                <span className="text-white/85 ml-2">
+                  {N >= 6 ? "4-of-6+" : N === 5 ? "3-of-5+" : N === 4 ? "3-of-4+" : "2-of-3+"} hits
+                </span>
+                <span className="ml-3 font-[family-name:var(--font-display)] text-base text-[#4ADE80]">
+                  {(flexHitProb * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
+
+            {/* Explainer: how this number was calculated.
+                IMPORTANT: pass the PATCHED probabilities (real projection +
+                intel swing applied), not p.prop.pMore — the raw prop number
+                is the PrizePicks-implied baseline (0.5/0.4/0.588), which
+                doesn't reflect what slipHitProb actually multiplies together.
+                Passing the raw values caused a UI bug where the explainer
+                showed e.g. "2.54% × 0.7 = 22.2%" — mathematically broken
+                because the result came from a different probability chain
+                than the inputs. */}
             <ProbabilityExplainer
-              picks={picks.map((p) => ({
-                prop: p.prop,
-                side: p.side,
-                probability: p.side === "more" ? p.prop.pMore : p.prop.pLess,
-              }))}
+              picks={picks.map((p, i) => {
+                const patched = selectedProps[i] ?? p.prop;
+                return {
+                  prop: p.prop,
+                  side: p.side,
+                  probability: p.side === "more" ? patched.pMore : patched.pLess,
+                };
+              })}
               finalHitProb={slipHitProb}
             />
 
