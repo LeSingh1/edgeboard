@@ -3,8 +3,9 @@
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw } from "lucide-react";
+import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw, Bookmark } from "lucide-react";
 import { PropBox } from "@/components/PropBox";
+import { SeedBoardPanel } from "@/components/SeedBoardPanel";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { Prop, LeagueSummary } from "@/lib/types";
@@ -69,6 +70,7 @@ export default function LiveBoardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [seedOpen, setSeedOpen] = useState(false);
   const [sport, setSport] = useState<string>("ALL");
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or YYYY-MM-DD
   const [sort, setSort] = useState<SortId>("time");
@@ -256,7 +258,7 @@ export default function LiveBoardPage() {
               No badge = PrizePicks data only, no model projection
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <button
               onClick={() => load({ force: true })}
               disabled={refreshing || loading}
@@ -269,6 +271,24 @@ export default function LiveBoardPage() {
               />
               <span className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest">
                 Refresh
+              </span>
+            </button>
+            {/* Seed-board button — pulses yellow when the board fetch errors
+                (PerimeterX is blocking us) since seeding is the user's path
+                back. Stays available as a discreet always-on tool otherwise. */}
+            <button
+              onClick={() => setSeedOpen(true)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-3 rounded-2xl border-4 border-dashed transition-colors",
+                error
+                  ? "border-[#FFE600] bg-[#FFE600]/15 text-[#FFE600] animate-pulse"
+                  : "border-white/20 bg-[#2D1B4E]/60 text-white/60 hover:text-[#FFE600] hover:border-[#FFE600]/60",
+              )}
+              aria-label="Open seed-board panel"
+            >
+              <Bookmark size={16} strokeWidth={3} />
+              <span className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest">
+                Seed board
               </span>
             </button>
             <div className="flex items-center gap-2 px-5 py-3 rounded-2xl border-4 border-dashed border-[#FFE600] bg-[#2D1B4E]/60 backdrop-blur-sm">
@@ -492,6 +512,17 @@ export default function LiveBoardPage() {
           </Link>
         </motion.div>
       )}
+
+      {/* Seed-board panel — modal portal-mounted internally, so its
+          position is independent of this parent's stacking context. */}
+      <SeedBoardPanel
+        open={seedOpen}
+        onClose={() => setSeedOpen(false)}
+        onSeeded={() => {
+          setSeedOpen(false);
+          load({ force: true });
+        }}
+      />
     </div>
   );
 }

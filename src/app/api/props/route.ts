@@ -335,28 +335,49 @@ export async function GET() {
  * No auth — this is a personal-use tool. If you ever deploy it publicly,
  * gate this behind a token check before shipping.
  */
+// CORS headers for the POST + OPTIONS preflight. We allow ANY origin
+// because the whole point is to let a bookmarklet running on
+// app.prizepicks.com POST the projections JSON here. Personal-use app —
+// if you ever deploy publicly, swap "*" for an allowlist or remove the
+// POST handler entirely.
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
+/** CORS preflight — required because the bookmarklet POSTs JSON across
+ *  origins, which triggers a preflight from the browser. */
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as JsonApiResponse;
     if (!body || !Array.isArray(body.data)) {
       return NextResponse.json(
         { error: "POST body must be a PrizePicks JSON:API response with a top-level `data` array." },
-        { status: 400 },
+        { status: 400, headers: CORS_HEADERS },
       );
     }
     const payload = parseProjections(body);
     lastGood = payload;
-    return NextResponse.json({
-      ok: true,
-      total: payload.total,
-      leagues: payload.leagues.map((l) => l.name),
-      fetchedAt: payload.fetchedAt,
-      message: `Seeded ${payload.total} props from manual upload. GET /api/props will now serve this snapshot.`,
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        total: payload.total,
+        leagues: payload.leagues.map((l) => l.name),
+        fetchedAt: payload.fetchedAt,
+        message: `Seeded ${payload.total} props from manual upload. GET /api/props will now serve this snapshot.`,
+      },
+      { headers: CORS_HEADERS },
+    );
   } catch (err) {
     return NextResponse.json(
       { error: `Failed to parse upload: ${String(err)}` },
-      { status: 400 },
+      { status: 400, headers: CORS_HEADERS },
     );
   }
 }
