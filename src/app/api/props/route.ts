@@ -28,6 +28,28 @@ interface JsonApiResponse {
   meta?: Record<string, unknown>;
 }
 
+/**
+ * Module-level snapshot of the last *successful* PP response we built.
+ * Lives for the lifetime of the Node process (per route worker). When PP
+ * rate-limits us (HTTP 429) or otherwise errors, we serve this stale-but-
+ * usable payload instead of returning empty arrays + a red error page.
+ *
+ * Trade-off: lines/odds may be a few minutes stale during an outage, but
+ * the entire UI keeps working. The `stale: true` flag + `staleSince` lets
+ * the client surface a small "data is N seconds old" hint if it wants.
+ *
+ * Capped to whatever the route produces — we just hold the last
+ * NextResponse-shaped object. Memory cost is negligible (a few hundred KB
+ * worst case for a full board).
+ */
+type CachedPayload = {
+  props: Prop[];
+  leagues: { name: string; count: number; icon?: string }[];
+  total: number;
+  fetchedAt: string;
+};
+let lastGood: CachedPayload | null = null;
+
 function attr<T = unknown>(r: JsonApiResource | undefined, key: string): T | undefined {
   return r?.attributes?.[key] as T | undefined;
 }
@@ -54,6 +76,30 @@ export async function GET() {
     });
 
     if (!res.ok) {
+      // PrizePicks unhappy. Common cases: 429 (rate-limited — they limit
+      // hard from cloud IPs), 5xx (their own incident), or 403 (UA block).
+      // If we have a previous good snapshot, serve it stale so the user
+      // doesn't see a black screen. The `stale: true` flag tells the UI
+      // it's looking at cached data; HTTP status stays 200 because the
+      // payload IS usable, just slightly old.
+      if (lastGood) {
+        const ageSec = Math.max(0, Math.round((Date.now() - new Date(lastGood.fetchedAt).getTime()) / 1000));
+        return NextResponse.json(
+          {
+            ...lastGood,
+            stale: true,
+            upstreamStatus: res.status,
+            staleAgeSec: ageSec,
+          },
+          {
+            // Short browser cache so clients retry soon and we pick up
+            // PP's recovery on the next refresh.
+            headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
+          },
+        );
+      }
+      // No prior snapshot to fall back on — return the original 502 so
+      // the UI can show its "Couldn't reach the board" state.
       return NextResponse.json(
         { error: `PrizePicks upstream ${res.status}`, props: [], leagues: [] },
         { status: 502 },
@@ -186,20 +232,30 @@ export async function GET() {
       .map(([name, { count, icon }]) => ({ name, count, icon }))
       .sort((a, b) => b.count - a.count);
 
-    return NextResponse.json(
-      {
-        props,
-        leagues,
-        total: props.length,
-        fetchedAt: new Date().toISOString(),
+    const payload: CachedPayload = {
+      props,
+      leagues,
+      total: props.length,
+      fetchedAt: new Date().toISOString(),
+    };
+    // Stash for the stale-fallback path so a future PP 429 has something
+    // to serve instead of an empty board.
+    lastGood = payload;
+    return NextResponse.json(payload, {
+      headers: {
+        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
       },
-      {
-        headers: {
-          "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
-        },
-      },
-    );
+    });
   } catch (err) {
+    // Network-level failure (DNS, timeout, TLS). Same logic: if we have a
+    // previous good snapshot, serve it stale instead of going dark.
+    if (lastGood) {
+      const ageSec = Math.max(0, Math.round((Date.now() - new Date(lastGood.fetchedAt).getTime()) / 1000));
+      return NextResponse.json(
+        { ...lastGood, stale: true, upstreamError: String(err), staleAgeSec: ageSec },
+        { headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" } },
+      );
+    }
     return NextResponse.json(
       { error: String(err), props: [], leagues: [] },
       { status: 500 },
