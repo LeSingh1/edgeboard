@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Sparkles,
@@ -64,6 +64,11 @@ export default function AutoPilotPage() {
   const [sport, setSport] = useState<AutoOr<string>>("auto");
   const [crunching, setCrunching] = useState(false);
   const [result, setResult] = useState<AutoPilotResult | null>(null);
+  // Ref to the results section so we can smooth-scroll it into view when
+  // "Build my lineups" finishes. Without this, on tall screens the user
+  // hits Build and nothing visibly happens — the lineups render hundreds
+  // of pixels below the fold.
+  const resultsRef = useRef<HTMLElement | null>(null);
   /** What the algorithm actually picked when controls were on auto.
    *  Stored alongside the result so the UI can say "we chose 4-pick at $20". */
   const [resolvedParams, setResolvedParams] = useState<{
@@ -157,6 +162,18 @@ export default function AutoPilotPage() {
     setResult(r);
     setResolvedParams(resolved);
     setCrunching(false);
+
+    // Smooth-scroll to the freshly-rendered results. Two requestAnimationFrame
+    // waits: the first lets React commit the new state and paint the section
+    // into the DOM; the second lets framer-motion's entrance animation start
+    // so we follow the layout that it's settling into, not the pre-animation
+    // one. scrollIntoView with behavior:"smooth" gets the browser's native
+    // easing — cheap, accessible, respects prefers-reduced-motion.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
   };
 
   // Push the generated lineups into the slip store and jump to the
@@ -524,11 +541,15 @@ export default function AutoPilotPage() {
         {result && (
           <motion.section
             key="results"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ type: "spring", damping: 22 }}
-            className="mt-14"
+            ref={resultsRef}
+            // Beefier entrance — slide up from further down with a spring,
+            // and offset the scroll target so the section header doesn't kiss
+            // the top of the viewport (scroll-mt-24 ≈ 6rem breathing room).
+            initial={{ opacity: 0, y: 60, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.98 }}
+            transition={{ type: "spring", damping: 24, stiffness: 220 }}
+            className="mt-14 scroll-mt-24"
           >
             <div className="flex items-end justify-between flex-wrap gap-3 mb-6">
               <div>
