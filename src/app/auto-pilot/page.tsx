@@ -20,10 +20,12 @@ import {
 import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
+import { useSelectionStore } from "@/stores/selectionStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
+import { PlayerDetailModal } from "@/components/PlayerDetailModal";
 import { accentHexFor, cn } from "@/lib/cn";
-import type { LeagueSummary, Prop } from "@/lib/types";
+import type { LeagueSummary, PickSide, Prop } from "@/lib/types";
 
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
@@ -51,6 +53,17 @@ export default function AutoPilotPage() {
   const router = useRouter();
   const setLineupResults = useLineupStore((s) => s.setResults);
   const byProp = useProjectionStore((s) => s.byProp);
+
+  // Selection store — clicking MORE/LESS inside the PlayerDetailModal goes
+  // through here so the bench stays in sync with whatever pick the user
+  // committed to. Same wiring as PropBox uses on the Live Board.
+  const benchPicks = useSelectionStore((s) => s.picks);
+  const toggleSelection = useSelectionStore((s) => s.toggle);
+
+  // Single page-level state for the player-detail modal. We open it from
+  // any pick row in any lineup card — one modal instance, lifted up so
+  // we don't pay React-tree-reconcile cost re-mounting it on every click.
+  const [inspectedProp, setInspectedProp] = useState<Prop | null>(null);
 
   const [board, setBoard] = useState<ApiResponse | null>(null);
   const [loadingBoard, setLoadingBoard] = useState(true);
@@ -604,6 +617,7 @@ export default function AutoPilotPage() {
                     lineup={l}
                     index={i}
                     entry={resolvedParams?.entry ?? l.entryCost}
+                    onPickClick={(prop) => setInspectedProp(prop)}
                   />
                 ))}
               </div>
@@ -622,6 +636,29 @@ export default function AutoPilotPage() {
           </motion.section>
         )}
       </AnimatePresence>
+
+      {/* Player detail modal — opens when the user taps any pick row inside
+          a generated lineup. Single instance lifted to the page level; the
+          row click handlers set `inspectedProp` and the modal reads it.
+          MORE / LESS inside the modal goes through useSelectionStore.toggle
+          so committing here adds the pick to the user's bench, same as
+          tapping a card on the Live Board. */}
+      {inspectedProp && (() => {
+        // Is this prop already on the bench? If yes, surface its side so
+        // the modal pill renders in the "active" state.
+        const benchEntry = benchPicks.find((p) => p.propId === inspectedProp.id);
+        return (
+          <PlayerDetailModal
+            open={true}
+            onClose={() => setInspectedProp(null)}
+            prop={inspectedProp}
+            selectedSide={(benchEntry?.side as PickSide | undefined) ?? null}
+            onToggleSide={(side) => toggleSelection(inspectedProp, side)}
+            moreP={inspectedProp.pMore * 100}
+            lessP={inspectedProp.pLess * 100}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -714,10 +751,15 @@ function LineupCard({
   lineup,
   index,
   entry,
+  onPickClick,
 }: {
   lineup: import("@/lib/types").Lineup;
   index: number;
   entry: number;
+  /** Tap handler for individual pick rows — opens the player-detail modal
+   *  (same one the Live Board uses) at the page level so the user can see
+   *  last-5 chart, projection line, etc. without losing their lineup view. */
+  onPickClick: (prop: Prop) => void;
 }) {
   const accent = accentHexFor(index);
   const accent2 = accentHexFor(index + 2);
@@ -782,7 +824,9 @@ function LineupCard({
         </div>
       </div>
 
-      {/* Picks */}
+      {/* Picks — each row is interactive; tap opens the player-detail
+          modal at the page level (last-5 chart, projection line, MORE/LESS
+          toggle that drops into the bench). */}
       <ul className="grid gap-2 p-5">
         {lineup.picks.map((p, i) => {
           const isMore = p.side === "more";
@@ -791,7 +835,21 @@ function LineupCard({
           return (
             <li
               key={p.prop.id}
-              className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-white/10 bg-[#2D1B4E]/40 px-3 py-2.5"
+              role="button"
+              tabIndex={0}
+              onClick={() => onPickClick(p.prop)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onPickClick(p.prop);
+                }
+              }}
+              aria-label={`Open details for ${p.prop.playerName} ${p.prop.statType} ${isMore ? "more" : "less"} ${p.prop.line}`}
+              className={cn(
+                "grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border border-white/10 bg-[#2D1B4E]/40 px-3 py-2.5",
+                "cursor-pointer hover:border-white/30 hover:bg-[#2D1B4E]/70 transition-colors",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D0D1A] focus-visible:ring-[#FFE600]",
+              )}
             >
               <span
                 className="w-7 h-7 rounded-full border-2 flex items-center justify-center font-[family-name:var(--font-display)] text-xs text-white/85"
