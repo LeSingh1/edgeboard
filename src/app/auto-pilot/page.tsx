@@ -23,6 +23,7 @@ import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/auto
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { useSelectionStore } from "@/stores/selectionStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { PlayerDetailModal } from "@/components/PlayerDetailModal";
@@ -55,6 +56,21 @@ export default function AutoPilotPage() {
   const router = useRouter();
   const setLineupResults = useLineupStore((s) => s.setResults);
   const byProp = useProjectionStore((s) => s.byProp);
+
+  // Playoffs-only filter — pulled from settings + the live playoff cache.
+  // When the user has flipped this on, we ask the warmup endpoint for the
+  // current alive-team set and pass it as a hard allowlist to the
+  // optimizer. Empty allowlist = no filter (graceful fallback when the
+  // cache hasn't been warmed yet).
+  const playoffsOnly = useSettingsStore((s) => s.playoffsOnly);
+  const [playoffTeams, setPlayoffTeams] = useState<string[]>([]);
+  useEffect(() => {
+    if (!playoffsOnly) return;
+    fetch("/api/playoff-warmup")
+      .then((r) => r.json())
+      .then((d: { teams?: string[] }) => setPlayoffTeams(d.teams ?? []))
+      .catch(() => null);
+  }, [playoffsOnly]);
 
   // Selection store — clicking MORE/LESS inside the PlayerDetailModal goes
   // through here so the bench stays in sync with whatever pick the user
@@ -155,9 +171,16 @@ export default function AutoPilotPage() {
     // that costs anything to resolve — pickAutoSize sweeps 2..6 against the
     // live board to find the size with the best expected dollars.
     const resolvedSport = sport === "auto" ? "ALL" : sport;
+    // If the user has "Playoff teams only" on and we have a cached team
+    // list, build an allowlist Set the optimizer can hard-filter on.
+    // Empty set means no filter (graceful fallback when cache isn't warm).
+    const allowlist = playoffsOnly && playoffTeams.length > 0
+      ? new Set(playoffTeams.map((t) => t.toUpperCase()))
+      : undefined;
     const optionsForSizing = {
       sport: resolvedSport,
       realProjections: byProp,
+      teamAllowlist: allowlist,
     };
     const resolved = {
       lineupCount: lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount,
@@ -172,7 +195,7 @@ export default function AutoPilotPage() {
       resolved.lineupSize,
       resolved.lineupCount,
       resolved.entry,
-      { sport: resolved.sport, realProjections: byProp },
+      { sport: resolved.sport, realProjections: byProp, teamAllowlist: allowlist },
     );
     setResult(r);
     setResolvedParams(resolved);

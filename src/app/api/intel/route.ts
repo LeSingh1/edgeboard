@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchMatchupNews, type NewsItem } from "@/lib/espnNews";
+import { getPlayoffCacheEntry } from "@/lib/playoffCache";
 import {
   extractHeuristicSignals,
   combinedSwing,
@@ -71,28 +72,38 @@ export async function POST(req: Request) {
       } satisfies IntelResponse);
     }
 
-    const athleteId = await findEspnAthleteId(prop.playerName, league);
-    if (!athleteId) {
-      return NextResponse.json({
-        available: false,
-        signals: [],
-        combinedSwing: 0,
-        newsCount: 0,
-        source: "heuristic",
-        topHeadlines: [],
-        reason: `Could not resolve "${prop.playerName}" on ESPN`,
-      } satisfies IntelResponse);
+    // Fast path: if this player is in the pre-warmed playoff cache, skip
+    // the cold ESPN lookup + scrape entirely. The cache holds the deeper
+    // news pull and the pre-extracted heuristic signals, so we save 1–3
+    // seconds per request and get a richer signal set.
+    const cached = league === "nba" ? getPlayoffCacheEntry(prop.playerName) : undefined;
+    let news: NewsItem[];
+    let heuristic: IntelSignal[];
+    if (cached) {
+      news = cached.news;
+      heuristic = cached.signals;
+    } else {
+      const athleteId = await findEspnAthleteId(prop.playerName, league);
+      if (!athleteId) {
+        return NextResponse.json({
+          available: false,
+          signals: [],
+          combinedSwing: 0,
+          newsCount: 0,
+          source: "heuristic",
+          topHeadlines: [],
+          reason: `Could not resolve "${prop.playerName}" on ESPN`,
+        } satisfies IntelResponse);
+      }
+      news = await fetchMatchupNews({
+        athleteId,
+        playerName: prop.playerName,
+        league,
+        opponent: prop.opponent,
+        playerTeam: prop.team,
+      });
+      heuristic = extractHeuristicSignals(news, prop.playerName);
     }
-
-    const news: NewsItem[] = await fetchMatchupNews({
-      athleteId,
-      playerName: prop.playerName,
-      league,
-      opponent: prop.opponent,
-      playerTeam: prop.team,
-    });
-
-    const heuristic = extractHeuristicSignals(news, prop.playerName);
 
     // Optional Claude enrichment
     let claudeSignals: IntelSignal[] = [];

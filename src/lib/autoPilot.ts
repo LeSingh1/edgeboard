@@ -45,6 +45,9 @@ export interface AutoPilotOptions {
    *  Defaults to true — the user is asking for multiple lineups, they
    *  probably want some variety, not 5 near-identical slips. */
   diversify?: boolean;
+  /** Hard filter: only include props whose team is in this set. Used by the
+   *  "Playoff teams only" toggle to drop eliminated teams from the pool. */
+  teamAllowlist?: Set<string>;
 }
 
 export interface AutoPilotResult {
@@ -194,6 +197,10 @@ export function buildAutoLineups(
     if (options.sport && options.sport !== "ALL" && p.sport !== options.sport) continue;
     if ((options.excludeLive ?? true) && p.isLive) continue;
     if ((options.excludeCombo ?? true) && p.isCombo) continue;
+    // Team allowlist (e.g. "alive playoff teams only"). Empty set = no filter.
+    if (options.teamAllowlist && options.teamAllowlist.size > 0) {
+      if (!p.team || !options.teamAllowlist.has(p.team.toUpperCase())) continue;
+    }
 
     const fk = familyKeyOf(p);
     if (seen.has(fk)) continue;

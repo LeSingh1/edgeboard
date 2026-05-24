@@ -16,6 +16,7 @@ import {
   type FlexTier,
 } from "@/lib/optimizer";
 import { useBankrollStore, bankrollSummary } from "@/stores/bankrollStore";
+import { PlayoffTrainPanel } from "@/components/PlayoffTrainPanel";
 import type { LeagueSummary, OddsType, Prop } from "@/lib/types";
 
 interface ApiResponse {
@@ -53,7 +54,14 @@ export default function ModelLabPage() {
         matrix, and your bankroll history. No mock data.
       </p>
 
-      <div className="mt-12 grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Playoff training panel — full-width above the grid since this is
+          the most important thing on the page right now (data enrichment
+          for the active postseason). */}
+      <div className="mt-12">
+        <PlayoffTrainPanel />
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <HouseEdgePanel />
         <BankrollPanel summary={summary} entered={records.length} />
         <DistributionPanel data={data} loading={loading} />
