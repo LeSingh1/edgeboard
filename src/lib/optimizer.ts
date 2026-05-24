@@ -47,40 +47,63 @@ function variantOptions(p: Prop, variantsByPropId?: Record<string, VariantSet>):
  * PrizePicks Power Play multipliers — current, documented in PrizePicks help center.
  *   2-pick: 3×   3-pick: 5×   4-pick: 10×   5-pick: 20×   6-pick: 25×
  */
+/**
+ * PrizePicks payouts — REVERSION MINIMUM-GUARANTEE schedule.
+ *
+ * PrizePicks runs two payout schedules side by side today:
+ *   1. Tournament prize ("1st place pays") — paid if you finish 1st in the
+ *      day's contest pool. Multipliers look huge (25× / 37.5×) but they're
+ *      a function of pool size and entrants. Non-deterministic.
+ *   2. Minimum guarantee — paid based purely on how many of your picks
+ *      hit. Deterministic, known up-front, doesn't depend on other users.
+ *
+ * EdgeBoard uses **minimum guarantee** for every "if it lands" / "pays $X"
+ * number, because that's the floor the user is actually playing for. The
+ * tournament prize is upside they may or may not get, so we don't include
+ * it in expected-value math.
+ *
+ * Values below are read directly from PrizePicks's current in-app schedule
+ * screens. CONFIRMED rows are from screenshots; the others are extrapolated
+ * from PP's published pattern. If you ever notice a mismatch, screenshot
+ * the PP lineup-builder for that size and we'll update.
+ *
+ * Source: PrizePicks → build a lineup → review screen → "Minimum Guarantee"
+ */
 export const POWER_MULTIPLIERS: Record<number, number> = {
-  2: 3,
-  3: 5,
-  4: 10,
-  5: 20,
-  6: 25,
+  // Power Play min guarantee — all picks must hit. Values per pick size.
+  2: 3,      // CONFIRMED
+  3: 5,      // tentative — close to legacy
+  4: 10,     // tentative — close to legacy
+  5: 20,     // tentative — close to legacy
+  6: 5.75,   // CONFIRMED (Reversion screen; legacy was 25×)
 };
 
 export interface FlexTier {
   hits: number;       // hits needed to land in this tier
-  multiplier: number; // payout multiplier
+  multiplier: number; // payout multiplier (min-guarantee)
 }
 
-/**
- * PrizePicks Flex Play partial-hit payout tables, current PrizePicks values.
- * Order: best payout (all hit) first.
- */
 export const FLEX_PAYOUT_TABLES: Record<number, FlexTier[]> = {
   3: [
-    { hits: 3, multiplier: 2.25 },
-    { hits: 2, multiplier: 1.25 },
+    { hits: 3, multiplier: 2.25 },   // tentative
+    { hits: 2, multiplier: 1.25 },   // tentative
   ],
   4: [
-    { hits: 4, multiplier: 5 },
-    { hits: 3, multiplier: 1.5 },
+    { hits: 4, multiplier: 5 },      // tentative
+    { hits: 3, multiplier: 1.5 },    // tentative
   ],
   5: [
-    { hits: 5, multiplier: 10 },
-    { hits: 4, multiplier: 2 },
-    { hits: 3, multiplier: 0.4 },
+    { hits: 5, multiplier: 10 },     // tentative
+    { hits: 4, multiplier: 2 },      // tentative
+    { hits: 3, multiplier: 0.4 },    // tentative
   ],
   6: [
-    { hits: 6, multiplier: 25 },
-    { hits: 5, multiplier: 2 },
+    // CONFIRMED from PrizePicks Reversion screen (May 2026):
+    //   6 correct pays 3X · 5 correct pays 1X · 4 correct pays 0.4X
+    // The 25× "1st place pays" is the tournament prize and is NOT
+    // included here — it's not deterministic.
+    { hits: 6, multiplier: 3 },
+    { hits: 5, multiplier: 1 },
     { hits: 4, multiplier: 0.4 },
   ],
 };

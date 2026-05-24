@@ -804,6 +804,12 @@ function LineupCard({
               {lineup.payoutMultiplier.toFixed(2)}× payout · pays{" "}
               <span className="text-[#00F5D4] font-bold">${lineup.grossPayout.toFixed(0)}</span> if it lands
             </div>
+            <div
+              className="text-white/40 text-[10px] mt-1 uppercase tracking-widest font-bold"
+              title="PrizePicks Reversion contests offer a 1st-place tournament prize on top of this — that's upside we can't predict, so it's not included here."
+            >
+              Min guarantee · contest 1st-place bonus not included
+            </div>
           </div>
         </div>
 
