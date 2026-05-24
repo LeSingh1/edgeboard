@@ -16,6 +16,8 @@ import {
   Loader2,
   AlertTriangle,
   Wand2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
@@ -895,10 +897,97 @@ function LineupCard({
         })}
       </ul>
 
-      <div className="px-5 pb-5 text-white/45 text-[10px] uppercase tracking-widest font-bold">
-        Entry ${entry} · {lineup.correlationRisk === "low" ? "picks independent" : lineup.correlationRisk === "medium" ? "some overlap" : "lots of overlap"}
+      <div className="px-5 pb-5 flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-white/45 text-[10px] uppercase tracking-widest font-bold">
+          Entry ${entry} · {lineup.correlationRisk === "low" ? "picks independent" : lineup.correlationRisk === "medium" ? "some overlap" : "lots of overlap"}
+        </span>
+        <CopyPicksButton lineup={lineup} entry={entry} />
       </div>
     </motion.article>
+  );
+}
+
+/**
+ * Compact "Copy picks" button — formats the lineup into a plain-text block
+ * the user can paste into a notes app, Discord, or PrizePicks itself if
+ * they're transcribing manually. Uses the Clipboard API; falls back to a
+ * legacy execCommand path so it still works on iOS Safari < 13.4 and
+ * non-secure-context dev URLs.
+ *
+ * Visual state cycles: idle → copied (1.5s) → idle. We swap the icon and
+ * label rather than firing a toast — keeps the action local to the row
+ * the user clicked, no full-page interruption.
+ */
+function CopyPicksButton({
+  lineup,
+  entry,
+}: {
+  lineup: import("@/lib/types").Lineup;
+  entry: number;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const formatted = (() => {
+    const pickLines = lineup.picks.map((p, i) => {
+      const side = p.side === "more" ? "MORE" : "LESS";
+      const oddsTag = p.prop.oddsType !== "standard" ? ` (${p.prop.oddsType.toUpperCase()})` : "";
+      const pct = `${(p.probability * 100).toFixed(0)}%`;
+      return `${i + 1}. ${p.prop.playerName} — ${p.prop.statType} ${side} ${p.prop.line}${oddsTag} · ${pct}`;
+    });
+    const sizeLabel = `${lineup.picks.length}-pick ${lineup.playType === "power" ? "Power" : "Flex"}`;
+    const hit = `${(lineup.hitProbability * 100).toFixed(1)}% hit`;
+    const pays = `$${lineup.grossPayout.toFixed(0)} if it lands`;
+    return `${pickLines.join("\n")}\n\n${sizeLabel} · ${hit} · ${pays} · $${entry} entry`;
+  })();
+
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(formatted);
+      } else {
+        // Legacy fallback — iOS Safari < 13.4 / non-secure contexts.
+        const ta = document.createElement("textarea");
+        ta.value = formatted;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Silently no-op on failure — the user can still select + copy manually
+      // from the open detail modal if this fails.
+    }
+  };
+
+  return (
+    <button
+      onClick={copy}
+      aria-label={copied ? "Picks copied to clipboard" : "Copy picks to clipboard"}
+      aria-live="polite"
+      className={cn(
+        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border-2 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px] transition-colors",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D0D1A] focus-visible:ring-[#FFE600]",
+        copied
+          ? "border-[#4ADE80] bg-[#4ADE80]/15 text-[#4ADE80]"
+          : "border-white/20 text-white/70 hover:text-white hover:border-white/50 hover:bg-white/5",
+      )}
+    >
+      {copied ? (
+        <>
+          <Check size={12} strokeWidth={3} aria-hidden />
+          Copied
+        </>
+      ) : (
+        <>
+          <Copy size={12} strokeWidth={3} aria-hidden />
+          Copy picks
+        </>
+      )}
+    </button>
   );
 }
 
