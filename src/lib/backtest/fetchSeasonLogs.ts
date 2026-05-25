@@ -96,6 +96,103 @@ function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
 }
 
+interface BoxScorePlayer {
+  name: string;
+  team: string;
+  espnId: number;
+}
+
+/** Pull a team's full 2025-26 schedule and return every game's eventId. */
+async function fetchTeamSchedule(teamAbbr: string): Promise<string[]> {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamAbbr}/schedule?season=2026`;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { events?: Array<{ id?: string }> };
+    return (body.events ?? []).map((e) => e.id).filter((id): id is string => !!id);
+  } catch {
+    return [];
+  }
+}
+
+/** Extract every athlete who appeared in a single game's box score. */
+async function fetchBoxScorePlayers(eventId: string): Promise<BoxScorePlayer[]> {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${eventId}`;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    if (!res.ok) return [];
+    const body = (await res.json()) as {
+      boxscore?: {
+        players?: Array<{
+          team?: { abbreviation?: string };
+          statistics?: Array<{
+            athletes?: Array<{
+              athlete?: { id?: string; displayName?: string };
+              didNotPlay?: boolean;
+            }>;
+          }>;
+        }>;
+      };
+    };
+    const out: BoxScorePlayer[] = [];
+    for (const teamBlock of body.boxscore?.players ?? []) {
+      const teamAbbr = teamBlock.team?.abbreviation ?? "";
+      for (const statGroup of teamBlock.statistics ?? []) {
+        for (const a of statGroup.athletes ?? []) {
+          const id = a.athlete?.id;
+          const name = a.athlete?.displayName;
+          if (!id || !name) continue;
+          out.push({ name, team: teamAbbr, espnId: Number(id) });
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Box-score-driven player discovery. Iterates every team's 2025-26 schedule,
+ * dedupes game IDs across opponents, pulls each box score, and unions every
+ * athlete who actually appeared (including waived/traded players the
+ * roster-based discovery misses).
+ *
+ * Returns a map keyed by espnId so callers can merge with roster data
+ * without name-collision ambiguity. Throttled the same way as gamelog
+ * fetches: batches of 8 with a 3s inter-batch sleep.
+ */
+async function discoverPlayersFromBoxScores(): Promise<Map<number, RosterPlayer & { espnId: number }>> {
+  console.log("[backtest] discovering games from team schedules…");
+  const schedules = await Promise.all(NBA_TEAM_ABBRS.map(fetchTeamSchedule));
+  const gameIds = new Set<string>();
+  for (const s of schedules) for (const id of s) gameIds.add(id);
+  const allGames = [...gameIds];
+  console.log(`[backtest] schedule discovered ${allGames.length} unique games`);
+
+  const players = new Map<number, RosterPlayer & { espnId: number }>();
+  const batchSize = 8;
+  for (let i = 0; i < allGames.length; i += batchSize) {
+    const batch = allGames.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(fetchBoxScorePlayers));
+    for (const list of results) {
+      for (const p of list) {
+        if (!players.has(p.espnId)) {
+          players.set(p.espnId, { name: p.name, team: p.team, espnId: p.espnId });
+        }
+      }
+    }
+    const done = Math.min(i + batchSize, allGames.length);
+    const pct = Math.round((done / allGames.length) * 100);
+    if (done % 80 === 0 || done === allGames.length) {
+      console.log(`[backtest] boxscores ${done}/${allGames.length} (${pct}%) · ${players.size} unique players so far`);
+    }
+    if (done < allGames.length) await sleep(3000);
+  }
+  console.log(`[backtest] box-score discovery: ${players.size} unique players across ${allGames.length} games`);
+  return players;
+}
+
 /**
  * Pull every NBA player's gamelog. Concurrency: batches of 8 per team's
  * roster, 3s pause between batches. Per-player failures (ESPN 5xx,
@@ -116,8 +213,27 @@ export async function fetchSeasonLogs(opts: { force?: boolean } = {}): Promise<S
 
   console.log("[backtest] fetching rosters for all 30 NBA teams…");
   const rosterResults = await Promise.all(NBA_TEAM_ABBRS.map(fetchRoster));
-  const allPlayers: RosterPlayer[] = rosterResults.flat();
-  console.log(`[backtest] roster discovered ${allPlayers.length} players`);
+  const rosterPlayers: RosterPlayer[] = rosterResults.flat();
+  console.log(`[backtest] roster discovered ${rosterPlayers.length} players`);
+
+  // Box-score discovery — catches traded/waived/G-League players who played
+  // but aren't on a current roster. Merged with roster set by ESPN ID; new
+  // players (not on any current roster) are appended with a sentinel team
+  // "—" (real team is whichever they last played for; gamelog fetch doesn't
+  // depend on team, only on the espnId via espnFindAthleteId/displayName).
+  const boxScorePlayers = await discoverPlayersFromBoxScores();
+  const rosterNames = new Set(rosterPlayers.map((p) => p.name.toLowerCase()));
+  const extras: RosterPlayer[] = [];
+  for (const bp of boxScorePlayers.values()) {
+    if (!rosterNames.has(bp.name.toLowerCase())) {
+      extras.push({ name: bp.name, team: bp.team || "—" });
+    }
+  }
+  const allPlayers: RosterPlayer[] = [...rosterPlayers, ...extras];
+  console.log(
+    `[backtest] union: ${allPlayers.length} players ` +
+      `(${rosterPlayers.length} from rosters + ${extras.length} from box scores only)`,
+  );
 
   const out: PlayerGamelog[] = [];
   const batchSize = 8;
