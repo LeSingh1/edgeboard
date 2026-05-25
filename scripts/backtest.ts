@@ -20,7 +20,7 @@ import { fetchSeasonLogs } from "@/lib/backtest/fetchSeasonLogs";
 import { synthesizeAllRows } from "@/lib/backtest/synthesizeLines";
 import { scoreModel } from "@/lib/backtest/scoreModel";
 import { aggregate, type ScoredPick } from "@/lib/backtest/aggregate";
-import { fitCalibration } from "@/lib/backtest/fitCalibration";
+import { fitMultiOddsCalibration } from "@/lib/backtest/fitCalibration";
 
 const DATA_DIR = path.join(process.cwd(), "data", "backtest");
 const REPORT_PATH = path.join(DATA_DIR, "report.json");
@@ -107,13 +107,20 @@ async function main() {
   await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2));
   console.log(`[backtest] wrote ${REPORT_PATH}`);
 
-  // ── 6. Fit isotonic calibration on (predicted, hit) pairs ─────
-  const pairs = picks.map((p) => ({ predicted: p.predictedPMore, hit: p.hit }));
-  const calibration = fitCalibration(pairs);
+  // ── 6. Fit isotonic calibration per oddsType (+ global fallback) ─
+  const pairs = picks.map((p) => ({
+    predicted: p.predictedPMore,
+    hit: p.hit,
+    oddsType: p.oddsType,
+  }));
+  const calibration = fitMultiOddsCalibration(pairs);
   await fs.writeFile(CALIBRATION_PATH, JSON.stringify(calibration, null, 2));
   console.log(
     `[backtest] wrote ${CALIBRATION_PATH} ` +
-      `(${calibration.breakpoints.length} breakpoints from ${calibration.trainingSize.toLocaleString()} pairs)`,
+      `(all: ${calibration.all.breakpoints.length} bp / ${calibration.all.trainingSize.toLocaleString()} pairs, ` +
+      `standard: ${calibration.standard.breakpoints.length} bp / ${calibration.standard.trainingSize.toLocaleString()}, ` +
+      `goblin: ${calibration.goblin.breakpoints.length} bp / ${calibration.goblin.trainingSize.toLocaleString()}, ` +
+      `demon: ${calibration.demon.breakpoints.length} bp / ${calibration.demon.trainingSize.toLocaleString()})`,
   );
 
   // ── 7. Console summary ────────────────────────────────────────
@@ -140,7 +147,8 @@ async function main() {
   console.log(`  Global residual: ${(report.syntheticPL.meanResidual * 100).toFixed(2)}%`);
   console.log(`  Elapsed: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log("");
-  console.log(`  Calibration written. Enable it in Settings to apply.`);
+  console.log(`  Calibration written. Live model applies it automatically on next request.`);
+  console.log(`  To disable: set DISABLE_CALIBRATION=1 in the server env.`);
 }
 
 main().catch((err) => {

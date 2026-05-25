@@ -414,14 +414,16 @@ function CalibrationToggleCard() {
     <SettingCard accent="#7B2FFF" accent2="#FFE600">
       <SettingHeader icon={Wand2} title="Backtest calibration" accent="#7B2FFF" />
       <p className="text-white/60 text-sm mb-4">
-        When on, every projection&apos;s hit probability is passed through the trained
-        isotonic corrector before being shown. The corrector is fit by{" "}
+        Calibration is{" "}
+        <strong className="text-[#4ADE80]">on by default</strong> — every NBA projection&apos;s
+        hit probability is automatically routed through the trained isotonic corrector before being
+        shown. Per-oddsType curves for standard / goblin / demon. Refit any time via{" "}
         <code className="px-1.5 py-0.5 rounded bg-[#0D0D1A] text-[#00F5D4] text-xs">
           npx tsx scripts/backtest.ts
-        </code>{" "}
-        and reviewed in Model Lab.
+        </code>
+        .
       </p>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <label className="inline-flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
@@ -431,7 +433,7 @@ function CalibrationToggleCard() {
             className="w-5 h-5 accent-[#7B2FFF]"
           />
           <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm text-white/85">
-            {enabled ? "Calibration on" : "Calibration off"}
+            {enabled ? "Active" : "Bypassed"}
           </span>
         </label>
         <span className="text-white/45 text-xs">
@@ -439,9 +441,14 @@ function CalibrationToggleCard() {
             ? "Checking for model…"
             : hasModel
               ? `Model fit on ${trainingSize.toLocaleString()} picks`
-              : "No model on disk — run the script first"}
+              : "No model on disk — run the backtest script"}
         </span>
       </div>
+      <p className="text-white/35 text-[10px] mt-3 leading-relaxed">
+        Untick only if you want to see raw heuristic output (for debugging or to compare against the
+        calibrated version). Server-side, the kill-switch is{" "}
+        <code className="text-[#FFE600]">DISABLE_CALIBRATION=1</code>.
+      </p>
     </SettingCard>
   );
 }

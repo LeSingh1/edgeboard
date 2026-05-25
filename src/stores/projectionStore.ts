@@ -100,39 +100,24 @@ export const useProjectionStore = create<ProjectionState>()(
  * Helper: given a prop and the projection store, return the best probability
  * we have — real if available, else PrizePicks-implied as fallback.
  *
- * Optional `calibrate` parameter: when provided, the resulting pMore (real
- * source only) is routed through the trained isotonic corrector before
- * being returned. Pass the apply function from `useCalibrationStore` to
- * enable. Implied probabilities are NOT calibrated — the calibration was
- * fit on the heuristic model's output distribution, not on
- * PrizePicks-implied baselines.
+ * Calibration is applied server-side in `realProjections.ts` for NBA/WNBA
+ * props, so the pMore stored here is already corrected when applicable.
+ * The `+iso` suffix on `modelVersion` indicates that calibration ran.
+ * Callers should NOT re-apply a corrector — doing so would double-correct.
  */
 export function effectiveProb(
   prop: Prop,
   side: "more" | "less",
   byProp: Record<string, ProjectionResult>,
-  calibrate?: (p: number) => number,
 ): { p: number; source: "real" | "implied"; modelVersion: string; sampleSize?: number; calibrated?: boolean } {
   const real = byProp[prop.id];
   if (real && real.available) {
-    const raw = side === "more" ? real.pMore : real.pLess;
-    if (calibrate) {
-      const cal = calibrate(raw);
-      // Only treat as calibrated if the corrector actually changed the value.
-      const changed = Math.abs(cal - raw) > 1e-6;
-      return {
-        p: cal,
-        source: "real",
-        modelVersion: changed ? `${real.modelVersion}+iso` : real.modelVersion,
-        sampleSize: real.sampleSize,
-        calibrated: changed,
-      };
-    }
     return {
-      p: raw,
+      p: side === "more" ? real.pMore : real.pLess,
       source: "real",
       modelVersion: real.modelVersion,
       sampleSize: real.sampleSize,
+      calibrated: real.modelVersion.includes("+iso"),
     };
   }
   return {

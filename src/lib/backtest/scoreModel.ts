@@ -17,6 +17,7 @@
  */
 
 import { ESPN_BASKETBALL_STATS } from "@/lib/realProjections";
+import { MODEL_CONSTANTS, type ModelConstants } from "@/lib/modelConstants";
 import type { PlayerGamelog } from "@/lib/backtest/fetchSeasonLogs";
 
 export interface ScoreInput {
@@ -33,6 +34,10 @@ export interface ScoreInput {
   propIsHome?: boolean;
   /** ISO timestamp of the target game — used for days-rest adjustment. */
   propGameTime?: string;
+  /** Override model constants. Defaults to MODEL_CONSTANTS. The offline
+   *  tuner uses this to grid-search alternative values without forking
+   *  the scoring function. */
+  constants?: ModelConstants;
 }
 
 export interface ScoreOutput {
@@ -91,6 +96,7 @@ function indexLookup(player: PlayerGamelog): {
  * the news-driven intel swing, which isn't part of the backtest scope).
  */
 export function scoreModel(input: ScoreInput): ScoreOutput | null {
+  const C = input.constants ?? MODEL_CONSTANTS;
   const { player, chronoIndex, stat, line } = input;
   const extractor = ESPN_BASKETBALL_STATS[stat];
   if (!extractor) return null;
@@ -102,7 +108,7 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
 
   // ── Baseline projection from rolling mean / sigma ────────────────
   const { mean, std } = meanStd(priorValues);
-  const sigma = Math.max(std, mean * 0.15, 0.5);
+  const sigma = Math.max(std, mean * C.sigmaFloorMultiplier, C.sigmaFloorAbsolute);
   const baselineProjection = mean;
 
   let adjustedMean = baselineProjection;
@@ -120,9 +126,8 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
     const lastN = priorValues.slice(-5);
     const recentMean = lastN.reduce((a, b) => a + b, 0) / lastN.length;
     const shift = recentMean - seasonMean;
-    if (Math.abs(shift) > sigma * 0.15) {
-      const confidence = 0.55;
-      adjustedMean += shift * confidence;
+    if (Math.abs(shift) > sigma * C.recentFormShiftThresholdSigma) {
+      adjustedMean += shift * C.recentFormConfidence;
     }
   }
 
@@ -142,8 +147,11 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
     if (vsValues.length >= 2) {
       const vsMean = vsValues.reduce((a, b) => a + b, 0) / vsValues.length;
       const shift = vsMean - seasonMean;
-      if (Math.abs(shift) > sigma * 0.2) {
-        const confidence = Math.min(0.6, 0.1 + vsValues.length * 0.1);
+      if (Math.abs(shift) > sigma * C.vsOppShiftThresholdSigma) {
+        const confidence = Math.min(
+          C.vsOppConfidenceCap,
+          C.vsOppConfidenceBase + vsValues.length * C.vsOppConfidencePerGame,
+        );
         adjustedMean += shift * confidence;
       }
     }
@@ -163,9 +171,12 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
       const awayMean = awayVals.reduce((a, b) => a + b, 0) / awayVals.length;
       const targetMean = input.propIsHome ? homeMean : awayMean;
       const shift = targetMean - seasonMean;
-      if (Math.abs(shift) > sigma * 0.15) {
+      if (Math.abs(shift) > sigma * C.homeAwayShiftThresholdSigma) {
         const minSide = Math.min(homeVals.length, awayVals.length);
-        const confidence = Math.min(0.5, 0.15 + minSide * 0.04);
+        const confidence = Math.min(
+          C.homeAwayConfidenceCap,
+          C.homeAwayConfidenceBase + minSide * C.homeAwayConfidencePerSide,
+        );
         adjustedMean += shift * confidence;
       }
     }
@@ -204,8 +215,11 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
           const bucketMean =
             bucketValues.reduce((a, b) => a + b, 0) / bucketValues.length;
           const shift = bucketMean - seasonMean;
-          if (Math.abs(shift) > sigma * 0.2) {
-            const confidence = Math.min(0.4, 0.1 + bucketValues.length * 0.03);
+          if (Math.abs(shift) > sigma * C.daysRestShiftThresholdSigma) {
+            const confidence = Math.min(
+              C.daysRestConfidenceCap,
+              C.daysRestConfidenceBase + bucketValues.length * C.daysRestConfidencePerGame,
+            );
             adjustedMean += shift * confidence;
           }
         }
@@ -215,7 +229,7 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
 
   // ── Final pMore from adjusted mean ───────────────────────────────
   const pMoreRaw = pMoreFromZ(line, adjustedMean, sigma);
-  const pMore = Math.max(0.02, Math.min(0.98, pMoreRaw));
+  const pMore = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, pMoreRaw));
   return {
     pMore,
     pLess: 1 - pMore,

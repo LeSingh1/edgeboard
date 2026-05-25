@@ -33,6 +33,26 @@ export interface CalibrationModel {
   breakpoints: CalibrationBreakpoint[];
 }
 
+/**
+ * Per-oddsType calibration model. Standards, goblins, and demons have
+ * materially different residual structures (see `report.json` byOddsType
+ * breakout — at the 0.80-0.90 bucket the residuals are −16.7%, −12.6%, −8.8%
+ * respectively). A single global curve over-/under-corrects each. We fit one
+ * curve per oddsType and route by `prop.oddsType` at apply time.
+ *
+ * `all` is the global curve kept for fallback (cold-start, unknown oddsType).
+ */
+export interface MultiOddsCalibrationModel {
+  fittedAt: string;
+  trainingSize: number;
+  all: CalibrationModel;
+  standard: CalibrationModel;
+  goblin: CalibrationModel;
+  demon: CalibrationModel;
+}
+
+export type OddsTypeKey = "standard" | "goblin" | "demon";
+
 /** Pool-Adjacent-Violators isotonic regression. */
 export function fitCalibration(
   pairs: Array<{ predicted: number; hit: boolean }>,
@@ -135,4 +155,38 @@ export function applyCalibrationModel(
   if (span <= 0) return left.corrected;
   const t = (predicted - left.predicted) / span;
   return left.corrected + t * (right.corrected - left.corrected);
+}
+
+/**
+ * Fit four calibration curves at once: a global one plus one per oddsType.
+ * Pairs without a recognized oddsType contribute to `all` only.
+ */
+export function fitMultiOddsCalibration(
+  pairs: Array<{ predicted: number; hit: boolean; oddsType: OddsTypeKey }>,
+): MultiOddsCalibrationModel {
+  const buckets: Record<OddsTypeKey, Array<{ predicted: number; hit: boolean }>> = {
+    standard: [],
+    goblin: [],
+    demon: [],
+  };
+  for (const p of pairs) {
+    const slot = buckets[p.oddsType];
+    if (slot) slot.push({ predicted: p.predicted, hit: p.hit });
+  }
+  return {
+    fittedAt: new Date().toISOString(),
+    trainingSize: pairs.length,
+    all: fitCalibration(pairs),
+    standard: fitCalibration(buckets.standard),
+    goblin: fitCalibration(buckets.goblin),
+    demon: fitCalibration(buckets.demon),
+  };
+}
+
+/** Type guard — distinguishes the new multi-oddsType schema from the legacy
+ *  single-curve schema for forward/backward compat in `applyCalibration.ts`. */
+export function isMultiOddsCalibrationModel(
+  m: CalibrationModel | MultiOddsCalibrationModel,
+): m is MultiOddsCalibrationModel {
+  return "all" in m && "standard" in m && "goblin" in m && "demon" in m;
 }

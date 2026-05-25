@@ -12,10 +12,12 @@ interface SettingsState {
    *  pre-warmed NBA playoff team set. Hard filter — the user has to
    *  un-tick this to see non-playoff picks. */
   playoffsOnly: boolean;
-  /** When true, every real-projection pMore is passed through the
-   *  trained isotonic calibration corrector before being shown to the
-   *  user. Default off — toggle on after running the backtest and
-   *  reviewing the report in Model Lab. */
+  /** Mirrors whether the server is applying the trained isotonic
+   *  calibration corrector. As of the per-oddsType rollout, calibration
+   *  applies server-side whenever `data/backtest/calibration.json` is
+   *  present — this flag is informational (drives the UI "calibrated"
+   *  badge). To actually disable calibration, set `DISABLE_CALIBRATION=1`
+   *  in the server env. */
   calibrationEnabled: boolean;
   setAnthropicKey: (k: string) => void;
   setBallDontLieKey: (k: string) => void;
@@ -34,7 +36,7 @@ export const useSettingsStore = create<SettingsState>()(
       pollingMinutes: 5,
       enabledSports: null,
       playoffsOnly: false,
-      calibrationEnabled: false,
+      calibrationEnabled: true,
       setAnthropicKey: (k) => set({ anthropicKey: k }),
       setBallDontLieKey: (k) => set({ ballDontLieKey: k }),
       setPolling: (m) => set({ pollingMinutes: Math.max(2, Math.min(30, m)) }),
@@ -52,7 +54,7 @@ export const useSettingsStore = create<SettingsState>()(
           pollingMinutes: 5,
           enabledSports: null,
           playoffsOnly: false,
-          calibrationEnabled: false,
+          calibrationEnabled: true,
         }),
     }),
     { name: "edgeboard-settings" },

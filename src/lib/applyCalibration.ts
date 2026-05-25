@@ -3,31 +3,38 @@
  *
  * Loads `data/backtest/calibration.json` at first request (server-side,
  * cached in memory for the process lifetime). When `realProjections.ts`
- * finishes computing a pMore, it can route the value through `calibrate()`
- * to get the corrected version. Falls back to the input unchanged if the
- * file doesn't exist yet — graceful no-op until the user runs the
- * backtest script for the first time.
+ * finishes computing a pMore, it routes the value through `calibrate()` /
+ * `calibrateSync()` (with the prop's oddsType) to get the corrected version.
  *
- * Behind a feature flag (`useSettingsStore.calibrationEnabled`) so the
- * blast radius of a bad fit is zero by default.
+ * Supports two on-disk schemas for forward/backward compat:
+ *   - Legacy: `{ breakpoints, trainingSize, fittedAt }` — one global curve
+ *   - Current: `{ all, standard, goblin, demon, ... }` — per-oddsType curves
+ *
+ * Falls back to the input unchanged if the file doesn't exist, the model
+ * is empty, or the `DISABLE_CALIBRATION=1` env kill-switch is set.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   applyCalibrationModel,
+  isMultiOddsCalibrationModel,
   type CalibrationModel,
+  type MultiOddsCalibrationModel,
+  type OddsTypeKey,
 } from "@/lib/backtest/fitCalibration";
 
 const CALIBRATION_PATH = path.join(process.cwd(), "data", "backtest", "calibration.json");
 
-let cached: CalibrationModel | null | undefined; // undefined = not yet attempted, null = tried but failed
+type LoadedModel = CalibrationModel | MultiOddsCalibrationModel;
+
+let cached: LoadedModel | null | undefined; // undefined = not yet attempted, null = tried but failed
 let pendingLoad: Promise<void> | null = null;
 
 async function loadCalibration(): Promise<void> {
   try {
     const raw = await fs.readFile(CALIBRATION_PATH, "utf8");
-    cached = JSON.parse(raw) as CalibrationModel;
+    cached = JSON.parse(raw) as LoadedModel;
   } catch {
     cached = null;
   }
@@ -40,32 +47,36 @@ export function resetCalibrationCache(): void {
   pendingLoad = null;
 }
 
-/**
- * Read the cached calibration model. Lazily loads from disk on first
- * call. Subsequent calls are synchronous-equivalent (the promise
- * resolves with the cached value).
- */
-export async function getCalibration(): Promise<CalibrationModel | null> {
+export async function getCalibration(): Promise<LoadedModel | null> {
   if (cached !== undefined) return cached;
   if (!pendingLoad) pendingLoad = loadCalibration();
   await pendingLoad;
   return cached ?? null;
 }
 
-/**
- * Async calibrator. Returns the corrected pMore, or the input unchanged
- * if no calibration model is present.
- */
-export async function calibrate(predicted: number): Promise<number> {
-  const model = await getCalibration();
-  if (!model) return predicted;
-  return applyCalibrationModel(model, predicted);
+function pickCurve(model: LoadedModel, oddsType?: OddsTypeKey): CalibrationModel {
+  if (!isMultiOddsCalibrationModel(model)) return model;
+  if (oddsType && model[oddsType].breakpoints.length > 0) return model[oddsType];
+  return model.all;
 }
 
-/** Synchronous fast-path — returns null if calibration hasn't been loaded
- *  yet, otherwise the corrected value. For hot paths that can't await. */
-export function calibrateSync(predicted: number): number | null {
-  if (cached === undefined) return null;
-  if (cached === null) return predicted;
-  return applyCalibrationModel(cached, predicted);
+function isDisabled(): boolean {
+  return process.env.DISABLE_CALIBRATION === "1";
+}
+
+/** Async calibrator. Routes by oddsType when the loaded model supports it. */
+export async function calibrate(predicted: number, oddsType?: OddsTypeKey): Promise<number> {
+  if (isDisabled()) return predicted;
+  const model = await getCalibration();
+  if (!model) return predicted;
+  return applyCalibrationModel(pickCurve(model, oddsType), predicted);
+}
+
+/** Synchronous fast-path. Returns the input unchanged if calibration hasn't
+ *  been loaded yet — callers that care should `await getCalibration()` once
+ *  at startup to warm the cache. */
+export function calibrateSync(predicted: number, oddsType?: OddsTypeKey): number {
+  if (isDisabled()) return predicted;
+  if (cached === undefined || cached === null) return predicted;
+  return applyCalibrationModel(pickCurve(cached, oddsType), predicted);
 }

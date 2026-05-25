@@ -28,10 +28,28 @@ interface BacktestReportData {
   };
 }
 
-interface CalibrationData {
+/** Legacy single-curve shape. */
+interface SingleCalibrationData {
   fittedAt: string;
   trainingSize: number;
   breakpoints: Array<{ predicted: number; corrected: number }>;
+}
+
+/** Current per-oddsType shape — fit on standard / goblin / demon
+ *  separately because their residuals diverge meaningfully. */
+interface MultiOddsCalibrationData {
+  fittedAt: string;
+  trainingSize: number;
+  all: SingleCalibrationData;
+  standard: SingleCalibrationData;
+  goblin: SingleCalibrationData;
+  demon: SingleCalibrationData;
+}
+
+type CalibrationData = SingleCalibrationData | MultiOddsCalibrationData;
+
+function isMultiOdds(c: CalibrationData): c is MultiOddsCalibrationData {
+  return "all" in c && "standard" in c && "goblin" in c && "demon" in c;
 }
 
 interface ApiResponse {
@@ -231,14 +249,27 @@ function Body({
             <Check size={18} strokeWidth={3} className="text-[#4ADE80] flex-shrink-0 mt-0.5" aria-hidden />
             <div className="flex-1">
               <div className="text-[#4ADE80] font-bold mb-0.5">
-                Calibration fit · {calibration.breakpoints.length} breakpoints from{" "}
-                {calibration.trainingSize.toLocaleString()} picks
+                {isMultiOdds(calibration) ? (
+                  <>
+                    Per-oddsType calibration fit from {calibration.trainingSize.toLocaleString()} picks
+                    <span className="text-white/55 text-xs font-normal ml-2">
+                      · all: {calibration.all.breakpoints.length}bp
+                      · std: {calibration.standard.breakpoints.length}bp
+                      · gob: {calibration.goblin.breakpoints.length}bp
+                      · dem: {calibration.demon.breakpoints.length}bp
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    Calibration fit · {calibration.breakpoints.length} breakpoints from{" "}
+                    {calibration.trainingSize.toLocaleString()} picks
+                  </>
+                )}
               </div>
               <div className="text-white/55 text-xs">
-                Written to <code className="text-[#00F5D4]">data/backtest/calibration.json</code>.
-                The live model can apply this corrector once you toggle{" "}
-                <strong className="text-white/80">Settings → Calibration enabled</strong>. Off
-                by default until you&apos;ve reviewed the buckets above.
+                Live model applies this corrector by default to every NBA projection. Toggle off in
+                Settings if you ever need raw heuristic output. Written to{" "}
+                <code className="text-[#00F5D4]">data/backtest/calibration.json</code>.
               </div>
             </div>
           </>

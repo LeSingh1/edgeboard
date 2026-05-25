@@ -10,6 +10,9 @@
  */
 
 import type { Prop } from "@/lib/types";
+import { MODEL_CONSTANTS as C } from "@/lib/modelConstants";
+import { calibrate, getCalibration } from "@/lib/applyCalibration";
+import type { OddsTypeKey } from "@/lib/backtest/fitCalibration";
 
 export interface ProjectionAdjustment {
   /** "Recent form", "vs NY Knicks", "Home/Away", etc. */
@@ -77,14 +80,16 @@ function buildResult(values: number[], line: number, source: string, modelVersio
     return { available: false, reason: `Only ${values.length} games — need at least 5` };
   }
   const { mean, std } = meanStd(values);
-  // Floor sigma so we don't divide by ~0 for very tight stats
-  const sigma = Math.max(std, mean * 0.15, 0.5);
+  // Floor sigma so we don't divide by ~0 for very tight stats. The
+  // multiplier is now tunable via MODEL_CONSTANTS so the offline tuner
+  // can search for a value that calibrates the model better.
+  const sigma = Math.max(std, mean * C.sigmaFloorMultiplier, C.sigmaFloorAbsolute);
   const z = (line - mean) / sigma;
   const pMore = 1 - cdfNormal(z);
   return {
     available: true,
-    pMore: r3(Math.max(0.02, Math.min(0.98, pMore))),
-    pLess: r3(1 - Math.max(0.02, Math.min(0.98, pMore))),
+    pMore: r3(Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, pMore))),
+    pLess: r3(1 - Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, pMore))),
     projection: r3(mean),
     sigma: r3(sigma),
     sampleSize: values.length,
@@ -135,10 +140,11 @@ function applyAdjustments(
     const lastN = signals.chronoValues.slice(-5);
     const recentMean = lastN.reduce((a, b) => a + b, 0) / lastN.length;
     const shift = recentMean - seasonMean;
-    if (Math.abs(shift) > sigma * 0.15) {
-      // Only record when the deviation is meaningful (>15% of sigma)
-      // Confidence scales with sample size — 5 games = 0.55, blend with season
-      const confidence = 0.55;
+    if (Math.abs(shift) > sigma * C.recentFormShiftThresholdSigma) {
+      // Only record when the deviation is meaningful (threshold tuned via
+      // MODEL_CONSTANTS.recentFormShiftThresholdSigma). Confidence is
+      // also tunable via .recentFormConfidence.
+      const confidence = C.recentFormConfidence;
       const blendedShift = shift * confidence;
       adjustments.push({
         label: "Recent form",
@@ -166,9 +172,13 @@ function applyAdjustments(
     if (vsValues.length >= 2) {
       const vsMean = vsValues.reduce((a, b) => a + b, 0) / vsValues.length;
       const shift = vsMean - seasonMean;
-      if (Math.abs(shift) > sigma * 0.2) {
-        // Confidence scales with sample size: 2 games = 0.2, 5+ = 0.6
-        const confidence = Math.min(0.6, 0.1 + vsValues.length * 0.1);
+      if (Math.abs(shift) > sigma * C.vsOppShiftThresholdSigma) {
+        // Confidence scales with vs-opp sample size — base + perGame × n,
+        // capped. All three are tunable via MODEL_CONSTANTS.
+        const confidence = Math.min(
+          C.vsOppConfidenceCap,
+          C.vsOppConfidenceBase + vsValues.length * C.vsOppConfidencePerGame,
+        );
         const blendedShift = shift * confidence;
         adjustments.push({
           label: `vs ${signals.propOpponent}`,
@@ -206,10 +216,14 @@ function applyAdjustments(
       const awayMean = awayVals.reduce((a, b) => a + b, 0) / awayVals.length;
       const targetMean = signals.propIsHome ? homeMean : awayMean;
       const shift = targetMean - seasonMean;
-      if (Math.abs(shift) > sigma * 0.15) {
-        // 8+ games each side = high confidence (0.5), fewer = scale down
+      if (Math.abs(shift) > sigma * C.homeAwayShiftThresholdSigma) {
+        // Confidence grows with the smaller side's count — tunable scale
+        // (Base + PerSide × minN, capped) via MODEL_CONSTANTS.
         const minSide = Math.min(homeVals.length, awayVals.length);
-        const confidence = Math.min(0.5, 0.15 + minSide * 0.04);
+        const confidence = Math.min(
+          C.homeAwayConfidenceCap,
+          C.homeAwayConfidenceBase + minSide * C.homeAwayConfidencePerSide,
+        );
         const blendedShift = shift * confidence;
         const where = signals.propIsHome ? "at home" : "on the road";
         adjustments.push({
@@ -270,8 +284,11 @@ function applyAdjustments(
         if (bucketValues.length >= 5) {
           const bucketMean = bucketValues.reduce((a, b) => a + b, 0) / bucketValues.length;
           const shift = bucketMean - seasonMean;
-          if (Math.abs(shift) > sigma * 0.2) {
-            const confidence = Math.min(0.4, 0.1 + bucketValues.length * 0.03);
+          if (Math.abs(shift) > sigma * C.daysRestShiftThresholdSigma) {
+            const confidence = Math.min(
+              C.daysRestConfidenceCap,
+              C.daysRestConfidenceBase + bucketValues.length * C.daysRestConfidencePerGame,
+            );
             const blendedShift = shift * confidence;
             const restLabel =
               daysRest === 0
@@ -302,7 +319,7 @@ function applyAdjustments(
 
   // Recompute pMore from the adjusted mean
   const adjZ = (line - adjustedMean) / sigma;
-  const adjustedPMore = Math.max(0.02, Math.min(0.98, 1 - cdfNormal(adjZ)));
+  const adjustedPMore = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, 1 - cdfNormal(adjZ)));
 
   // Back-fill each adjustment's pMore swing for the UI breakdown.
   // We approximate: each adjustment contributes proportionally to its shift.
@@ -841,10 +858,55 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
   // detects the segment via prop.sport and scales the player's ESPN gamelog
   // accordingly: 1Q multiplies by 0.25, 1H/2H by 0.5, full game by 1.0.
   if (sport.startsWith("NBA") || sport.startsWith("WNBA")) {
-    return nbaProjection(prop);
+    const raw = await nbaProjection(prop);
+    return applyCalibrationToResult(raw, prop.oddsType as OddsTypeKey);
   }
   return {
     available: false,
     reason: `No real model for ${prop.sport} yet — using PrizePicks's default chance.`,
+  };
+}
+
+/**
+ * Route the chosen-side probability through the trained isotonic corrector.
+ * The backtest was fit on `chosenProb → calibratedChosenProb` for the side
+ * the model preferred (always ≥ 0.5), so live application must mirror that:
+ * calibrate whichever of pMore/pLess is the model's preferred side, then
+ * derive the other as `1 − corrected`.
+ *
+ * No-ops if `calibration.json` doesn't exist or the kill-switch
+ * `DISABLE_CALIBRATION=1` is set.
+ */
+async function applyCalibrationToResult(
+  result: ProjectionResult,
+  oddsType: OddsTypeKey | undefined,
+): Promise<ProjectionResult> {
+  if (!result.available) return result;
+  const model = await getCalibration();
+  if (!model) return result;
+  const preferMore = result.pMore >= result.pLess;
+  const chosen = preferMore ? result.pMore : result.pLess;
+  const corrected = await calibrate(chosen, oddsType);
+  if (Math.abs(corrected - chosen) < 1e-6) return result;
+  const calPMore = preferMore ? corrected : 1 - corrected;
+  const calPLess = 1 - calPMore;
+  const swing = calPMore - result.pMore;
+  const calibrationAdjustment: ProjectionAdjustment = {
+    label: "Calibration",
+    shift: 0,
+    pMoreSwing: r3(swing),
+    reason:
+      `Isotonic corrector (${oddsType ?? "all"}) trained on 2025-26 season — ` +
+      `raw model is overconfident; corrected to match observed hit rate.`,
+    confidence: 1,
+  };
+  return {
+    ...result,
+    pMore: r3(calPMore),
+    pLess: r3(calPLess),
+    adjustments: [...(result.adjustments ?? []), calibrationAdjustment],
+    modelVersion: result.modelVersion.includes("+iso")
+      ? result.modelVersion
+      : `${result.modelVersion}+iso`,
   };
 }
