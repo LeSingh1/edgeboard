@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertTriangle, Key, Clock, Trophy, Check, Activity, Eye, EyeOff } from "lucide-react";
+import { AlertTriangle, Key, Clock, Trophy, Check, Activity, Eye, EyeOff, Wand2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useBankrollStore, bankrollSummary } from "@/stores/bankrollStore";
@@ -132,6 +132,9 @@ export default function SettingsPage() {
             </div>
           </div>
         </SettingCard>
+
+        {/* Backtest calibration */}
+        <CalibrationToggleCard />
 
         {/* Bankroll */}
         <SettingCard accent="#FFE600" accent2="#7B2FFF">
@@ -364,6 +367,82 @@ function SettingHeader({
         {title}
       </h2>
     </div>
+  );
+}
+
+/**
+ * Toggle to enable the trained isotonic calibration corrector on the
+ * live projection pipeline. Reads from /api/backtest/report so the user
+ * sees whether a calibration model is even present before flipping the
+ * switch (we don't enable corrections we don't have).
+ *
+ * Off by default. Live model is unaffected until the user opts in.
+ */
+function CalibrationToggleCard() {
+  const enabled = useSettingsStore((s) => s.calibrationEnabled);
+  const setEnabled = useSettingsStore((s) => s.setCalibrationEnabled);
+  const [hasModel, setHasModel] = useState<boolean | null>(null);
+  const [trainingSize, setTrainingSize] = useState<number>(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/backtest/report");
+        if (!r.ok || cancelled) return;
+        const body = (await r.json()) as {
+          available: boolean;
+          calibration?: { trainingSize?: number } | null;
+        };
+        if (cancelled) return;
+        if (body.available && body.calibration) {
+          setHasModel(true);
+          setTrainingSize(body.calibration.trainingSize ?? 0);
+        } else {
+          setHasModel(false);
+        }
+      } catch {
+        if (!cancelled) setHasModel(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <SettingCard accent="#7B2FFF" accent2="#FFE600">
+      <SettingHeader icon={Wand2} title="Backtest calibration" accent="#7B2FFF" />
+      <p className="text-white/60 text-sm mb-4">
+        When on, every projection&apos;s hit probability is passed through the trained
+        isotonic corrector before being shown. The corrector is fit by{" "}
+        <code className="px-1.5 py-0.5 rounded bg-[#0D0D1A] text-[#00F5D4] text-xs">
+          npx tsx scripts/backtest.ts
+        </code>{" "}
+        and reviewed in Model Lab.
+      </p>
+      <div className="flex items-center gap-3">
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!hasModel}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="w-5 h-5 accent-[#7B2FFF]"
+          />
+          <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm text-white/85">
+            {enabled ? "Calibration on" : "Calibration off"}
+          </span>
+        </label>
+        <span className="text-white/45 text-xs">
+          {hasModel === null
+            ? "Checking for model…"
+            : hasModel
+              ? `Model fit on ${trainingSize.toLocaleString()} picks`
+              : "No model on disk — run the script first"}
+        </span>
+      </div>
+    </SettingCard>
   );
 }
 

@@ -463,7 +463,7 @@ export async function mlbProjection(prop: Prop): Promise<ProjectionResult> {
 //   ['MIN', 'FG', 'FG%', '3PT', '3P%', 'FT', 'FT%', 'REB', 'AST', 'BLK', 'STL', 'PF', 'TO', 'PTS']
 // "FG", "3PT", "FT" are "made-attempted" strings (e.g. "8-18") — we take the made portion.
 
-function extractByLabel(stats: string[], labels: string[], label: string): number {
+export function extractByLabel(stats: string[], labels: string[], label: string): number {
   const i = labels.indexOf(label);
   if (i === -1) return 0;
   const raw = stats[i] ?? "";
@@ -472,9 +472,9 @@ function extractByLabel(stats: string[], labels: string[], label: string): numbe
   return Number.isFinite(n) ? n : 0;
 }
 
-type EspnStatExtractor = (stats: string[], labels: string[]) => number;
+export type EspnStatExtractor = (stats: string[], labels: string[]) => number;
 
-const ESPN_BASKETBALL_STATS: Record<string, EspnStatExtractor> = {
+export const ESPN_BASKETBALL_STATS: Record<string, EspnStatExtractor> = {
   "Points":          (s, l) => extractByLabel(s, l, "PTS"),
   "Pts":             (s, l) => extractByLabel(s, l, "PTS"),
   "Rebounds":        (s, l) => extractByLabel(s, l, "REB"),
@@ -518,20 +518,20 @@ interface EspnSearchItem {
   league: string;
 }
 
-interface EspnGamelogEvent {
+export interface EspnGamelogEvent {
   eventId: string;
   stats: string[];
 }
 
 /** Event metadata pulled from the gamelog's parallel `events` lookup table. */
-interface EspnEventMeta {
+export interface EspnEventMeta {
   eventId: string;
   gameDate?: string;             // ISO timestamp
   opponentAbbr?: string;         // "NY", "BOS", etc.
   atVs?: string;                 // "@" (away) or "vs" (home)
 }
 
-async function espnFindAthleteId(
+export async function espnFindAthleteId(
   playerName: string,
   league: "nba" | "wnba",
 ): Promise<number | null> {
@@ -563,7 +563,7 @@ async function espnFindAthleteId(
   }
 }
 
-async function espnGameLog(
+export async function espnGameLog(
   athleteId: number,
   league: "nba" | "wnba",
 ): Promise<{

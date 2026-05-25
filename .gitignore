@@ -44,3 +44,6 @@ next-env.d.ts
 .claude/
 .vscode/
 .idea/
+
+# Backtest artifacts (regenerable, large)
+data/backtest/

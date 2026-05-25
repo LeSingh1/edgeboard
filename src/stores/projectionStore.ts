@@ -99,16 +99,37 @@ export const useProjectionStore = create<ProjectionState>()(
 /**
  * Helper: given a prop and the projection store, return the best probability
  * we have — real if available, else PrizePicks-implied as fallback.
+ *
+ * Optional `calibrate` parameter: when provided, the resulting pMore (real
+ * source only) is routed through the trained isotonic corrector before
+ * being returned. Pass the apply function from `useCalibrationStore` to
+ * enable. Implied probabilities are NOT calibrated — the calibration was
+ * fit on the heuristic model's output distribution, not on
+ * PrizePicks-implied baselines.
  */
 export function effectiveProb(
   prop: Prop,
   side: "more" | "less",
   byProp: Record<string, ProjectionResult>,
-): { p: number; source: "real" | "implied"; modelVersion: string; sampleSize?: number } {
+  calibrate?: (p: number) => number,
+): { p: number; source: "real" | "implied"; modelVersion: string; sampleSize?: number; calibrated?: boolean } {
   const real = byProp[prop.id];
   if (real && real.available) {
+    const raw = side === "more" ? real.pMore : real.pLess;
+    if (calibrate) {
+      const cal = calibrate(raw);
+      // Only treat as calibrated if the corrector actually changed the value.
+      const changed = Math.abs(cal - raw) > 1e-6;
+      return {
+        p: cal,
+        source: "real",
+        modelVersion: changed ? `${real.modelVersion}+iso` : real.modelVersion,
+        sampleSize: real.sampleSize,
+        calibrated: changed,
+      };
+    }
     return {
-      p: side === "more" ? real.pMore : real.pLess,
+      p: raw,
       source: "real",
       modelVersion: real.modelVersion,
       sampleSize: real.sampleSize,

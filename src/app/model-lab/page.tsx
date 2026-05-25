@@ -17,6 +17,7 @@ import {
 } from "@/lib/optimizer";
 import { useBankrollStore, bankrollSummary } from "@/stores/bankrollStore";
 import { PlayoffTrainPanel } from "@/components/PlayoffTrainPanel";
+import { BacktestReport } from "@/components/BacktestReport";
 import type { LeagueSummary, OddsType, Prop } from "@/lib/types";
 
 interface ApiResponse {
@@ -59,6 +60,10 @@ export default function ModelLabPage() {
           for the active postseason). */}
       <div className="mt-12">
         <PlayoffTrainPanel />
+      </div>
+
+      <div className="mt-6">
+        <BacktestReport />
       </div>
 
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
