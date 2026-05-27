@@ -2,14 +2,58 @@ import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-// Roster cap: top-50 NCAAM programs to keep nightly fetch volume reasonable.
-// Based on AP poll regulars + KenPom top programs. ESPN team slugs (lowercase).
+// Roster cap: top-~45 NCAAM programs to keep nightly fetch volume reasonable.
+// Based on AP poll regulars + KenPom top programs. ESPN team numeric IDs.
+// (ESPN's schedule endpoint accepts slugs OR numeric IDs; abbreviations are
+// inconsistent and many short forms 400. Numeric IDs are stable.)
 const NCAAM_TEAMS = [
-  "uconn","duke","kentucky","unc","kansas","ariz","baylor","gonz","mich","msu",
-  "ucla","villa","wisc","tex","ill","tenn","auburn","ala","fla","mary",
-  "purd","iowa","virg","syr","wfu","mia","fsu","lou","clem","gt",
-  "nd","bc","pitt","nova","seton","stj","prov","creight","xav","utah",
-  "byu","colo","ariz-st","ore","wash","stan","cal","usc","ucla","oreg",
+  "41",   // UConn
+  "150",  // Duke
+  "96",   // Kentucky
+  "153",  // UNC
+  "2305", // Kansas
+  "12",   // Arizona
+  "239",  // Baylor
+  "2250", // Gonzaga
+  "130",  // Michigan
+  "127",  // Michigan State
+  "26",   // UCLA
+  "222",  // Villanova
+  "275",  // Wisconsin
+  "251",  // Texas
+  "356",  // Illinois
+  "2633", // Tennessee
+  "2",    // Auburn
+  "333",  // Alabama
+  "57",   // Florida
+  "120",  // Maryland
+  "2509", // Purdue
+  "2294", // Iowa
+  "258",  // Virginia
+  "183",  // Syracuse
+  "154",  // Wake Forest
+  "2390", // Miami
+  "52",   // Florida State
+  "97",   // Louisville
+  "228",  // Clemson
+  "59",   // Georgia Tech
+  "87",   // Notre Dame
+  "103",  // Boston College
+  "221",  // Pittsburgh
+  "2550", // Seton Hall
+  "2599", // St. John's
+  "2507", // Providence
+  "156",  // Creighton
+  "2752", // Xavier
+  "254",  // Utah
+  "252",  // BYU
+  "38",   // Colorado
+  "9",    // Arizona State
+  "2483", // Oregon
+  "264",  // Washington
+  "24",   // Stanford
+  "25",   // California
+  "30",   // USC
 ];
 
 export async function fetchTeamSchedule(teamAbbr: string, season: number): Promise<string[]> {
