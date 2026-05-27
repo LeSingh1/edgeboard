@@ -1,11 +1,32 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const AFL_TEAMS = ["adel","bl","carl","coll","ess","fre","geel","gcfc","gws","haw","melb","nm","port","rich","stk","syd","wb","wce"];
+// ESPN AFL team numeric IDs (abbreviations like "adel", "bl" 400 on the
+// schedule endpoint — numeric IDs are stable).
+const AFL_TEAMS = [
+  "15", // Adelaide Crows
+  "11", // Brisbane Lions
+  "9",  // Carlton
+  "17", // Collingwood
+  "16", // Essendon
+  "1",  // Fremantle
+  "8",  // GWS Giants
+  "14", // Geelong Cats
+  "10", // Gold Coast Suns
+  "13", // Hawthorn
+  "2",  // Melbourne
+  "5",  // North Melbourne
+  "7",  // Port Adelaide
+  "12", // Richmond
+  "18", // St Kilda
+  "4",  // Sydney Swans
+  "3",  // West Coast Eagles
+  "6",  // Western Bulldogs
+];
 
 export async function fetchTeamSchedule(teamAbbr: string, season: number): Promise<string[]> {
   const ids = new Set<string>();
-  const url = `https://site.api.espn.com/apis/site/v2/sports/aussierules/afl/teams/${teamAbbr}/schedule?season=${season}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/teams/${teamAbbr}/schedule?season=${season}`;
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
@@ -16,7 +37,7 @@ export async function fetchTeamSchedule(teamAbbr: string, season: number): Promi
 }
 
 async function fetchBoxScorePlayers(eventId: string): Promise<PlayerRef[]> {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/aussierules/afl/summary?event=${eventId}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/summary?event=${eventId}`;
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
@@ -52,7 +73,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
 export async function fetchPlayerGamelog(playerId: string, seasons: number[]): Promise<RawGame[]> {
   const out: RawGame[] = [];
   for (const season of seasons) {
-    const url = `https://site.web.api.espn.com/apis/common/v3/sports/aussierules/afl/athletes/${playerId}/gamelog?season=${season}`;
+    const url = `https://site.web.api.espn.com/apis/common/v3/sports/australian-football/afl/athletes/${playerId}/gamelog?season=${season}`;
     try {
       const res = await fetch(url, { headers: { "User-Agent": UA } });
       if (!res.ok) continue;
