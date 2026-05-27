@@ -5,3 +5,5 @@ import { wnbaAdapter } from "./wnba";
 registerAdapter(wnbaAdapter);
 import { mlbAdapter } from "./mlb";
 registerAdapter(mlbAdapter);
+import { nflAdapter } from "./nfl";
+registerAdapter(nflAdapter);
