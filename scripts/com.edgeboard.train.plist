@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>                <string>com.edgeboard.train</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <string>cd PROJECT_DIR &amp;&amp; /usr/local/bin/npx tsx scripts/train-all.ts &gt;&gt; data/training/meta/launchd.log 2&gt;&amp;1</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>    <integer>3</integer>
+    <key>Minute</key>  <integer>15</integer>
+  </dict>
+  <key>RunAtLoad</key>             <false/>
+  <key>KeepAlive</key>             <false/>
+  <key>StandardOutPath</key>       <string>PROJECT_DIR/data/training/meta/launchd-stdout.log</string>
+  <key>StandardErrorPath</key>     <string>PROJECT_DIR/data/training/meta/launchd-stderr.log</string>
+</dict>
+</plist>
