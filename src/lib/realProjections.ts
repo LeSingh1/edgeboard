@@ -12,7 +12,9 @@
 import type { Prop } from "@/lib/types";
 import { MODEL_CONSTANTS as C } from "@/lib/modelConstants";
 import { calibrate, getCalibration } from "@/lib/applyCalibration";
+import { kalshiSignalFor, blendPMore, type KalshiSignal } from "@/lib/kalshi";
 import type { OddsTypeKey } from "@/lib/backtest/fitCalibration";
+export type { OddsTypeKey };
 import {
   getDefenseRatings,
   getDefensiveDeltaSync,
@@ -816,16 +818,42 @@ export async function espnFindAthleteId(
   }
 }
 
-export async function espnGameLog(
+/**
+ * Which ESPN seasons we train the projection model on for a given league.
+ *
+ * WNBA gets the prior + current season because the WNBA regular season is
+ * short (~40 games) and runs May–Sep, so in May/June the current-season
+ * gamelog is too sparse to model anyone. Pulling 2025 + 2026 takes a typical
+ * Satou Sabally from 3 games (refuses to project) to ~54 games (stable mean).
+ *
+ * NBA stays single-season — the 82-game regular season provides ample sample
+ * by November, and players' roles shift more between seasons than in the
+ * WNBA, so mixing prior-year data is more likely to bias than help.
+ */
+function trainingSeasonsFor(league: "nba" | "wnba"): number[] {
+  if (league !== "wnba") return [];
+  // WNBA season runs May–Sep. Whatever calendar year it is, pull this year
+  // and last year. After Oct 1 the league is in offseason, so just keep both.
+  const now = new Date();
+  const year = now.getFullYear();
+  return [year - 1, year];
+}
+
+/** Fetch one season's gamelog from ESPN.
+ *  - `season` omitted → ESPN's current-season default
+ *  - `season` set    → that specific season (e.g. 2025 for the 2025 regular season) */
+async function fetchSingleSeasonGamelog(
   athleteId: number,
   league: "nba" | "wnba",
+  season?: number,
 ): Promise<{
   labels: string[];
   events: EspnGamelogEvent[];
-  /** propId → opponent abbr + game date, used for vs-opponent + recent form adjustments */
   meta: Map<string, EspnEventMeta>;
 }> {
-  const url = `https://site.web.api.espn.com/apis/common/v3/sports/basketball/${league}/athletes/${athleteId}/gamelog`;
+  const url =
+    `https://site.web.api.espn.com/apis/common/v3/sports/basketball/${league}/athletes/${athleteId}/gamelog` +
+    (season ? `?season=${season}` : "");
   try {
     const res = await fetch(url, { next: { revalidate: 3600 } });
     if (!res.ok) return { labels: [], events: [], meta: new Map() };
@@ -841,7 +869,6 @@ export async function espnGameLog(
         }
       }
     }
-    // Parallel events table — opponent + date per eventId
     const meta = new Map<string, EspnEventMeta>();
     const rawEvents = (data.events ?? {}) as Record<string, {
       gameDate?: string;
@@ -860,6 +887,59 @@ export async function espnGameLog(
   } catch {
     return { labels: [], events: [], meta: new Map() };
   }
+}
+
+/**
+ * Pull a player's gamelog from ESPN, optionally merging multiple seasons.
+ *
+ * Why multi-season: WNBA regular seasons are short (40 games), so early in
+ * the year (when 2026 has 3 games logged) we'd refuse to model anyone — the
+ * `buildResult` 5-game floor would trip. By pulling last season too we get
+ * 40-60 games of foundation; the downstream "recent form" adjustment is
+ * still responsible for tracking the player's CURRENT trend, so adding old
+ * games anchors the mean without freezing it to last year's role.
+ *
+ * Events from later seasons are emitted last so any caller that takes a tail
+ * slice (`events.slice(-N)`) for "recent N" naturally gets the newest games.
+ */
+export async function espnGameLog(
+  athleteId: number,
+  league: "nba" | "wnba",
+  opts?: { seasons?: number[] },
+): Promise<{
+  labels: string[];
+  events: EspnGamelogEvent[];
+  /** propId → opponent abbr + game date, used for vs-opponent + recent form adjustments */
+  meta: Map<string, EspnEventMeta>;
+}> {
+  // Default: ESPN's current season only — preserves the old single-call
+  // behavior for callers that don't opt in to multi-season training.
+  const seasons = opts?.seasons;
+  if (!seasons || seasons.length === 0) {
+    return fetchSingleSeasonGamelog(athleteId, league);
+  }
+  // Fire all season requests in parallel. We sort by season ascending so the
+  // merged events list runs oldest → newest, which makes downstream
+  // "last N games" logic correct out of the box.
+  const ordered = [...seasons].sort((a, b) => a - b);
+  const seasonResults = await Promise.all(
+    ordered.map((s) => fetchSingleSeasonGamelog(athleteId, league, s)),
+  );
+  // Stat-column labels are stable across seasons for the same league; take
+  // whichever non-empty list shows up first.
+  const labels = seasonResults.find((r) => r.labels.length > 0)?.labels ?? [];
+  const events: EspnGamelogEvent[] = [];
+  const meta = new Map<string, EspnEventMeta>();
+  const seenIds = new Set<string>();
+  for (const r of seasonResults) {
+    for (const e of r.events) {
+      if (seenIds.has(e.eventId)) continue;
+      seenIds.add(e.eventId);
+      events.push(e);
+    }
+    for (const [k, v] of r.meta) meta.set(k, v);
+  }
+  return { labels, events, meta };
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -980,7 +1060,9 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
     if (!split) {
       return { available: false, reason: `No season rebound split available for ${prop.playerName}` };
     }
-    const { labels, events } = await espnGameLog(athleteId, league);
+    const { labels, events } = await espnGameLog(athleteId, league, {
+      seasons: trainingSeasonsFor(league),
+    });
     if (events.length === 0) {
       return { available: false, reason: "ESPN returned no games for this player" };
     }
@@ -1018,7 +1100,9 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
     return { available: false, reason: `No mapping for stat type "${prop.statType}"` };
   }
 
-  const { labels, events, meta } = await espnGameLog(athleteId, league);
+  const { labels, events, meta } = await espnGameLog(athleteId, league, {
+    seasons: trainingSeasonsFor(league),
+  });
   if (events.length === 0) {
     return { available: false, reason: "ESPN returned no games for this player" };
   }
@@ -1096,36 +1180,119 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
 // ════════════════════════════════════════════════════════════════════
 
 export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
-  const sport = prop.sport.toUpperCase();
+  // Ensure registry is populated (idempotent — only the first call does work)
+  await import("@/lib/sports/registerAll");
+  const { getAdapterFor } = await import("@/lib/sports/registry");
+  const { loadArtifactsForSport } = await import("@/lib/sports/artifactCache");
 
-  if (sport === "MLB") {
-    return mlbProjection(prop);
+  // Warm caches up front so the NBA/WNBA sync accessors hit. The adapter's
+  // project() delegates to nbaProjection/mlbProjection which read from these.
+  await Promise.all([
+    getDefenseRatings(),
+    getCalibration(),
+    getPlayoffCalibration(),
+    getRound2Teams(),
+    getBreakoutProfiles(),
+    getGameScript(),
+  ]);
+
+  const adapter = getAdapterFor(prop.sport.toUpperCase());
+  let result: ProjectionResult;
+  if (adapter) {
+    const artifacts = await loadArtifactsForSport(adapter.leagues[0].toLowerCase());
+    result = await adapter.project(prop, artifacts);
+  } else {
+    result = {
+      available: false,
+      reason: `No real model for ${prop.sport} yet — using PrizePicks's default chance.`,
+    };
   }
-  // NBA/WNBA — full game AND segments (1Q, 1H, 2H, etc.). `nbaProjection`
-  // detects the segment via prop.sport and scales the player's ESPN gamelog
-  // accordingly: 1Q multiplies by 0.25, 1H/2H by 0.5, full game by 1.0.
-  if (sport.startsWith("NBA") || sport.startsWith("WNBA")) {
-    // Warm caches up front so the sync accessors hit.
-    await Promise.all([
-      getDefenseRatings(),
-      getCalibration(),
-      getPlayoffCalibration(),
-      getRound2Teams(),
-      getBreakoutProfiles(),
-      getGameScript(),
-    ]);
-    const raw = await nbaProjection(prop);
-    return applyCalibrationToResult(
-      raw,
-      prop.oddsType as OddsTypeKey,
-      prop.statType,
-      prop.gameTime,
-      prop.team,
-    );
+
+  // Kalshi blend — runs alongside ESPN. Coverage is narrow (Points/Assists/3PT
+  // for NBA/WNBA today) but when a market matches, it gives an independent
+  // probability signal. Behavior depends on whether ESPN has a usable answer:
+  //   - ESPN unavailable + Kalshi available → use Kalshi standalone
+  //   - Both available → inverse-variance blend, recorded as an adjustment
+  //   - Neither → return whatever we had
+  result = await maybeBlendKalshi(prop, result);
+  return result;
+}
+
+/**
+ * Optionally enrich a projection result with a Kalshi market-implied signal.
+ *
+ * Safe to call for any prop — returns the input unchanged if (sport, statType)
+ * isn't in Kalshi's coverage map or no matching market has a usable quote.
+ *
+ * Kalshi's threshold semantics ("Player: 13+") map directly to PrizePicks's
+ * line semantics for `Number.isInteger(line) ? line+1 : ceil(line)`, which is
+ * what `kalshiSignalFor` already evaluated at. So `signal.pYes` IS pMore.
+ */
+async function maybeBlendKalshi(prop: Prop, result: ProjectionResult): Promise<ProjectionResult> {
+  let signal: KalshiSignal | null;
+  try {
+    signal = await kalshiSignalFor(prop);
+  } catch {
+    return result;
   }
+  if (!signal) return result;
+
+  if (!result.available) {
+    // Kalshi-only path: fabricate a minimal RealProjection. We don't have a
+    // gamelog mean here, so we leave `projection` at the line itself and
+    // express our uncertainty via a synthetic sigma. The badge will render
+    // off pMore/pLess as normal.
+    const pMore = signal.pYes;
+    const pMoreClamped = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, pMore));
+    return {
+      available: true,
+      pMore: r3(pMoreClamped),
+      pLess: r3(1 - pMoreClamped),
+      // Without a gamelog mean we report the line as a placeholder. Spread is
+      // the only uncertainty signal Kalshi gives us, so scale it to roughly
+      // match the typical sigma range (~1–6 for basketball stats).
+      projection: r3(prop.line),
+      sigma: r3(Math.max(0.5, signal.spread * 10)),
+      sampleSize: 0,
+      recent: [],
+      source: `Kalshi market · ${signal.marketTicker.split("+")[0]}`,
+      modelVersion: "kalshi-only-v1",
+      baselineProjection: r3(prop.line),
+      baselinePMore: r3(pMoreClamped),
+      adjustments: [
+        {
+          label: "Kalshi market",
+          shift: 0,
+          pMoreSwing: 0,
+          confidence: signal.confidence,
+          reason: `Kalshi bid/ask midpoint at ${signal.threshold}+ (spread ${(signal.spread * 100).toFixed(0)}¢) — no ESPN gamelog model available, using market consensus alone.`,
+        },
+      ],
+    };
+  }
+
+  // Both available — inverse-variance-ish blend. Trust the ESPN side more
+  // when its sample is large; trust Kalshi more when the spread is tight.
+  const espnConfidence = Math.min(1, result.sampleSize / 10);
+  const { pMore: blendedPMore, kalshiWeight } = blendPMore(result.pMore, espnConfidence, signal);
+  const pMoreBefore = result.pMore;
+  const pMoreClamped = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, blendedPMore));
+  const swing = pMoreClamped - pMoreBefore;
   return {
-    available: false,
-    reason: `No real model for ${prop.sport} yet — using PrizePicks's default chance.`,
+    ...result,
+    pMore: r3(pMoreClamped),
+    pLess: r3(1 - pMoreClamped),
+    source: `${result.source} + Kalshi`,
+    adjustments: [
+      ...(result.adjustments ?? []),
+      {
+        label: "Kalshi market",
+        shift: 0,
+        pMoreSwing: r3(swing),
+        confidence: signal.confidence,
+        reason: `Kalshi ${signal.marketTicker.split("+")[0]} implies P(More) ≈ ${(signal.pYes * 100).toFixed(0)}% at ${signal.threshold}+ (spread ${(signal.spread * 100).toFixed(0)}¢); blended at ${(kalshiWeight * 100).toFixed(0)}% weight.`,
+      },
+    ],
   };
 }
 
@@ -1139,7 +1306,7 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
  * No-ops if `calibration.json` doesn't exist or the kill-switch
  * `DISABLE_CALIBRATION=1` is set.
  */
-async function applyCalibrationToResult(
+export async function applyCalibrationToResult(
   result: ProjectionResult,
   oddsType: OddsTypeKey | undefined,
   stat?: string,

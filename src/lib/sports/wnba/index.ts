@@ -15,7 +15,10 @@ const SUPPORTED_STATS = [
 ];
 
 export const wnbaAdapter: SportAdapter = {
-  leagues: ["WNBA", "WNBA1Q", "WNBA1H"],
+  leagues: [
+    "WNBA", "WNBA1Q", "WNBA2Q", "WNBA3Q", "WNBA4Q", "WNBA1H", "WNBA2H",
+    "WNBAPTS", "WNBAAST", "WNBA3PT",
+  ],
   displayName: "WNBA",
   trainingSeasons,
   supportedStats: SUPPORTED_STATS,
@@ -24,7 +27,15 @@ export const wnbaAdapter: SportAdapter = {
   fetchTeamSchedule,
   extractStat: nbaExtractStat,
   project: async (prop: Prop) => {
-    const { nbaProjection } = await import("@/lib/realProjections");
-    return nbaProjection(prop);
+    // Same wrapping pattern as the NBA adapter — see comment there.
+    const { nbaProjection, applyCalibrationToResult } = await import("@/lib/realProjections");
+    const raw = await nbaProjection(prop);
+    return applyCalibrationToResult(
+      raw,
+      prop.oddsType as import("@/lib/backtest/fitCalibration").OddsTypeKey,
+      prop.statType,
+      prop.gameTime,
+      prop.team,
+    );
   },
 };

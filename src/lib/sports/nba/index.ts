@@ -10,7 +10,10 @@ const SUPPORTED_STATS = [
 ];
 
 export const nbaAdapter: SportAdapter = {
-  leagues: ["NBA", "NBA1Q", "NBA1H"],
+  leagues: [
+    "NBA", "NBA1Q", "NBA2Q", "NBA3Q", "NBA4Q", "NBA1H", "NBA2H",
+    "NBAPTS", "NBAAST", "NBA3PT",
+  ],
   displayName: "NBA",
   trainingSeasons: () => {
     const y = new Date().getFullYear();
@@ -22,8 +25,18 @@ export const nbaAdapter: SportAdapter = {
   fetchTeamSchedule,
   extractStat: nbaExtractStat,
   project: async (prop: Prop) => {
-    // Delegate to existing nbaProjection() during transition
-    const { nbaProjection } = await import("@/lib/realProjections");
-    return nbaProjection(prop);
+    // Delegate to existing nbaProjection() during transition, then layer
+    // calibration on top (the previous projectionFor dispatch was the only
+    // caller of applyCalibrationToResult — moving it here keeps the path
+    // intact for the registry-routed flow).
+    const { nbaProjection, applyCalibrationToResult } = await import("@/lib/realProjections");
+    const raw = await nbaProjection(prop);
+    return applyCalibrationToResult(
+      raw,
+      prop.oddsType as import("@/lib/backtest/fitCalibration").OddsTypeKey,
+      prop.statType,
+      prop.gameTime,
+      prop.team,
+    );
   },
 };
