@@ -9,3 +9,5 @@ import { nflAdapter } from "./nfl";
 registerAdapter(nflAdapter);
 import { nhlAdapter } from "./nhl";
 registerAdapter(nhlAdapter);
+import { soccerAdapter } from "./soccer";
+registerAdapter(soccerAdapter);
