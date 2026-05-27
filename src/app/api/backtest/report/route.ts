@@ -12,14 +12,19 @@ import path from "node:path";
  * pipeline iterable from the terminal without spinning the dev server).
  */
 
-const REPORT_PATH = path.join(process.cwd(), "data", "backtest", "report.json");
-const CALIBRATION_PATH = path.join(process.cwd(), "data", "backtest", "calibration.json");
+const DATA_DIR = path.join(process.cwd(), "data", "backtest");
+const REPORT_PATH = path.join(DATA_DIR, "report.json");
+const CALIBRATION_PATH = path.join(DATA_DIR, "calibration.json");
+const CV_PATH = path.join(DATA_DIR, "crossValidation.json");
+const WALKFWD_PATH = path.join(DATA_DIR, "walkForward.json");
 
 export async function GET() {
   try {
-    const [reportRaw, calibrationRaw] = await Promise.all([
+    const [reportRaw, calibrationRaw, cvRaw, walkRaw] = await Promise.all([
       fs.readFile(REPORT_PATH, "utf8").catch(() => null),
       fs.readFile(CALIBRATION_PATH, "utf8").catch(() => null),
+      fs.readFile(CV_PATH, "utf8").catch(() => null),
+      fs.readFile(WALKFWD_PATH, "utf8").catch(() => null),
     ]);
     if (!reportRaw) {
       return NextResponse.json(
@@ -31,6 +36,8 @@ export async function GET() {
       available: true,
       report: JSON.parse(reportRaw),
       calibration: calibrationRaw ? JSON.parse(calibrationRaw) : null,
+      crossValidation: cvRaw ? JSON.parse(cvRaw) : null,
+      walkForward: walkRaw ? JSON.parse(walkRaw) : null,
     });
   } catch (err) {
     return NextResponse.json(

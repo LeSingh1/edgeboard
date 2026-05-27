@@ -246,42 +246,46 @@ export default function OptimizerPage() {
     router.push("/slips");
   };
 
-  // ── Empty cart state ──
+  // ── Empty cart state — bench is empty, but the Custom Leaderboard
+  // panel is standalone (doesn't depend on the cart), so we still show
+  // it below the empty-cart prompt.
   if (N === 0) {
     return (
-      <div className="max-w-2xl mx-auto px-6 py-20 text-center">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="mx-auto w-24 h-24 rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 to-[#7B2FFF]/30 flex items-center justify-center mb-6"
-        >
-          <ShoppingCart size={42} strokeWidth={3} className="text-[#FFE600]" />
-        </motion.div>
-        <motion.h1
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="font-[family-name:var(--font-heading)] font-black text-6xl uppercase tracking-tighter gradient-text-rainbow"
-        >
-          Cart is empty
-        </motion.h1>
-        <p className="text-white/70 text-lg mt-6">
-          Head back to the live board and tap MORE / LESS on the props you want to ride with —
-          or let Auto-Pilot pick the best ones for you.
-        </p>
-        <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
-          <Link
-            href="/auto-pilot"
-            className="inline-flex items-center gap-2 px-8 py-4 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white hover:scale-105 active:scale-95 transition-transform"
+      <div className="max-w-7xl mx-auto px-4 md:px-6 py-12 md:py-16">
+        <div className="max-w-2xl mx-auto text-center">
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="mx-auto w-24 h-24 rounded-3xl border-4 border-[#FFE600] bg-gradient-to-br from-[#FF3AF2]/30 to-[#7B2FFF]/30 flex items-center justify-center mb-6"
           >
-            <Sparkles size={18} strokeWidth={3} />
-            Build me lineups
-          </Link>
-          <Link
-            href="/live-board"
-            className="inline-flex items-center gap-2 px-6 py-4 rounded-full border-4 border-dashed border-white/30 text-white/80 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest hover:bg-white/5 transition-colors"
+            <ShoppingCart size={42} strokeWidth={3} className="text-[#FFE600]" />
+          </motion.div>
+          <motion.h1
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="font-[family-name:var(--font-heading)] font-black text-6xl uppercase tracking-tighter gradient-text-rainbow"
           >
-            To live board <ArrowRight strokeWidth={3} />
-          </Link>
+            Cart is empty
+          </motion.h1>
+          <p className="text-white/70 text-lg mt-6">
+            Head back to the live board and tap MORE / LESS on the props you want to ride with —
+            or let Auto-Pilot pick the best ones for you.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-8">
+            <Link
+              href="/auto-pilot"
+              className="inline-flex items-center gap-2 px-8 py-4 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white hover:scale-105 active:scale-95 transition-transform"
+            >
+              <Sparkles size={18} strokeWidth={3} />
+              Build me lineups
+            </Link>
+            <Link
+              href="/live-board"
+              className="inline-flex items-center gap-2 px-6 py-4 rounded-full border-4 border-dashed border-white/30 text-white/80 font-[family-name:var(--font-heading)] font-black uppercase tracking-widest hover:bg-white/5 transition-colors"
+            >
+              To live board <ArrowRight strokeWidth={3} />
+            </Link>
+          </div>
         </div>
       </div>
     );

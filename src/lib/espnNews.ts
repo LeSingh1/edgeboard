@@ -82,13 +82,97 @@ async function scrapeEspnPage(url: string): Promise<NewsItem[]> {
   }
 }
 
-/** ESPN athlete page — typically rich with player-specific news. */
+/** ESPN athlete page — typically rich with player-specific news.
+ *  As of 2026, the HTML page no longer embeds article JSON. Returns
+ *  empty in most cases; callers should prefer `fetchPlayerNewsViaTeam`. */
 export async function fetchPlayerNews(
   athleteId: number,
   league: "nba" | "wnba" | "mlb",
 ): Promise<NewsItem[]> {
   const url = `https://www.espn.com/${league}/player/_/id/${athleteId}`;
   return scrapeEspnPage(url);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Team-scoped news via the Core API — replacement for the deprecated
+// per-athlete HTML scrape. Returns the team's recent news, filtered to
+// articles that mention the target player by name.
+// ────────────────────────────────────────────────────────────────────────
+
+const NBA_TEAM_IDS: Record<string, number> = {
+  ATL: 1,  BOS: 2,  BKN: 17, CHA: 30, CHI: 4,  CLE: 5,  DAL: 6,  DEN: 7,
+  DET: 8,  GS: 9,   GSW: 9,  HOU: 10, IND: 11, LAC: 12, LAL: 13, MEM: 29,
+  MIA: 14, MIL: 15, MIN: 16, NO: 3,   NOP: 3,  NY: 18,  NYK: 18, OKC: 25,
+  ORL: 19, PHI: 20, PHX: 21, POR: 22, SAC: 23, SA: 24,  SAS: 24, TOR: 28,
+  UTA: 26, UTAH: 26, WAS: 27, WSH: 27,
+};
+
+interface CoreNewsArticle {
+  headline?: string;
+  description?: string;
+  published?: string;
+}
+
+/** Build name-match patterns: full name, last-name-only, "Last (First initial)". */
+function namePatterns(playerName: string): RegExp[] {
+  const parts = playerName.trim().split(/\s+/);
+  const last = parts[parts.length - 1];
+  const first = parts[0];
+  return [
+    new RegExp(`\\b${escapeRe(playerName)}\\b`, "i"),
+    new RegExp(`\\b${escapeRe(last)}\\b`, "i"),
+    // Headlines often shorten "Victor Wembanyama" → "Wemby" — last name catches most
+    new RegExp(`\\b${escapeRe(first)}\\s+${escapeRe(last.charAt(0))}\\.`, "i"),
+  ];
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Pull a team's recent news and filter to articles that mention the player.
+ * Each match becomes a NewsItem with the full headline + description so the
+ * heuristic intel rules can fire on real text.
+ */
+export async function fetchPlayerNewsViaTeam(args: {
+  playerName: string;
+  teamAbbr: string;
+  league?: "nba" | "wnba";
+  limit?: number;
+}): Promise<NewsItem[]> {
+  const league = args.league ?? "nba";
+  if (league !== "nba") return []; // team-id map is NBA-only for now
+  const teamId = NBA_TEAM_IDS[args.teamAbbr.toUpperCase()];
+  if (!teamId) return [];
+  const sportPath = "basketball/nba";
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/news?team=${teamId}&limit=${args.limit ?? 30}`;
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "application/json" },
+      next: { revalidate: 600 },
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { articles?: CoreNewsArticle[] };
+    const articles = body.articles ?? [];
+    const patterns = namePatterns(args.playerName);
+    const items: NewsItem[] = [];
+    for (const a of articles) {
+      const headline = (a.headline ?? "").trim();
+      const description = (a.description ?? "").trim();
+      const blob = `${headline} ${description}`;
+      if (!patterns.some((p) => p.test(blob))) continue;
+      items.push({
+        headline,
+        description: description || headline,
+        recent: items.length < 6,
+      });
+      if (items.length >= 12) break;
+    }
+    return items;
+  } catch {
+    return [];
+  }
 }
 
 /** ESPN league news endpoint — for opponent-team / general context. */

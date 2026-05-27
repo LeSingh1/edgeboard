@@ -27,6 +27,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { PlayerDetailModal } from "@/components/PlayerDetailModal";
+import { CustomLeaderboard } from "@/components/CustomLeaderboard";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { LeagueSummary, PickSide, Prop } from "@/lib/types";
 
@@ -247,12 +248,22 @@ export default function AutoPilotPage() {
 
   if (boardError) {
     return (
-      <div className="max-w-2xl mx-auto px-6 py-24 text-center">
-        <AlertTriangle size={48} className="text-[#F87171] mx-auto" strokeWidth={3} />
-        <h1 className="font-[family-name:var(--font-heading)] font-black text-4xl mt-4 text-white">
-          Couldn&apos;t reach the board
-        </h1>
-        <p className="text-white/60 mt-3 text-sm">{boardError}</p>
+      <div className="max-w-7xl mx-auto px-4 md:px-6 py-12">
+        <div className="max-w-2xl mx-auto text-center">
+          <AlertTriangle size={48} className="text-[#F87171] mx-auto" strokeWidth={3} />
+          <h1 className="font-[family-name:var(--font-heading)] font-black text-4xl mt-4 text-white">
+            Couldn&apos;t reach the board
+          </h1>
+          <p className="text-white/60 mt-3 text-sm">{boardError}</p>
+          <div className="mt-10 flex items-center gap-3 text-white/40 text-[10px] uppercase tracking-widest font-bold">
+            <span className="flex-1 h-[1px] bg-white/10" />
+            <span>but you can still score your own picks</span>
+            <span className="flex-1 h-[1px] bg-white/10" />
+          </div>
+        </div>
+        <div className="mt-8">
+          <CustomLeaderboard />
+        </div>
       </div>
     );
   }
@@ -684,6 +695,13 @@ export default function AutoPilotPage() {
           />
         );
       })()}
+
+      {/* Custom Leaderboard — paste your own picks, score them through the
+          model, get a sorted edge ranking. Standalone from the auto-pilot
+          flow above; lets users bring their own arrays of picks. */}
+      <div className="mt-12">
+        <CustomLeaderboard />
+      </div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ interface ProjectionState {
   byProp: Record<string, ProjectionResult>;
   /** propIds currently being fetched */
   pending: Set<string>;
-  fetchOne: (prop: Prop, ballDontLieKey?: string) => Promise<void>;
+  fetchOne: (prop: Prop, ballDontLieKey?: string, intel?: { swing?: number; evidence?: string }) => Promise<void>;
   clear: () => void;
 }
 
@@ -48,7 +48,7 @@ export const useProjectionStore = create<ProjectionState>()(
     (set, get) => ({
       byProp: {},
       pending: new Set(),
-      fetchOne: async (prop, ballDontLieKey) => {
+      fetchOne: async (prop, ballDontLieKey, intel) => {
         const state = get();
         // Already cached this session — bail.
         // Skip the cache for stale `available: false` entries: when projection
@@ -63,10 +63,15 @@ export const useProjectionStore = create<ProjectionState>()(
         return new Promise<void>((resolve) => {
           enqueue(async () => {
             try {
+              // Bake intel into the prop so the server applies it inside
+              // the projection pipeline (consistent across all consumers).
+              const enrichedProp = intel
+                ? { ...prop, intelSwing: intel.swing, intelEvidence: intel.evidence }
+                : prop;
               const res = await fetch("/api/projection", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prop, ballDontLieKey }),
+                body: JSON.stringify({ prop: enrichedProp, ballDontLieKey }),
               });
               const data = (await res.json()) as ProjectionResult;
               set((s) => ({ byProp: { ...s.byProp, [prop.id]: data } }));

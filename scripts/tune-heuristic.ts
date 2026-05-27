@@ -27,6 +27,14 @@ import { fetchSeasonLogs, type PlayerGamelog } from "@/lib/backtest/fetchSeasonL
 import { synthesizeAllRows, type BacktestRow } from "@/lib/backtest/synthesizeLines";
 import { scoreModel } from "@/lib/backtest/scoreModel";
 import { MODEL_CONSTANTS, type ModelConstants } from "@/lib/modelConstants";
+import {
+  buildDefenseRatings,
+  type DefenseRatings,
+} from "@/lib/backtest/defenseRatings";
+import {
+  buildBreakoutProfiles,
+  type BreakoutProfiles,
+} from "@/lib/backtest/breakoutProfile";
 
 interface LabeledExample {
   player: PlayerGamelog;
@@ -73,9 +81,12 @@ function buildDataset(players: PlayerGamelog[]): LabeledExample[] {
 
 /** Pick the model's preferred side, evaluate against actual.
  *  Returns the chosen pMore and whether the chosen side hit. */
-function scoreOne(ex: LabeledExample, constants: ModelConstants):
-  | { p: number; hit: boolean }
-  | null {
+function scoreOne(
+  ex: LabeledExample,
+  constants: ModelConstants,
+  defenseRatings?: DefenseRatings,
+  breakoutProfiles?: BreakoutProfiles,
+): { p: number; hit: boolean } | null {
   const out = scoreModel({
     player: ex.player,
     chronoIndex: ex.chronoIndex,
@@ -86,6 +97,8 @@ function scoreOne(ex: LabeledExample, constants: ModelConstants):
     propIsHome: ex.propIsHome,
     propGameTime: ex.propGameTime,
     constants,
+    defenseRatings,
+    breakoutProfiles,
   });
   if (!out) return null;
   const moreHit = ex.actualValue > ex.line;
@@ -97,11 +110,16 @@ function scoreOne(ex: LabeledExample, constants: ModelConstants):
 }
 
 /** Mean log-loss across examples. Lower is better. Clamps to avoid log(0). */
-function logLoss(examples: LabeledExample[], constants: ModelConstants): number {
+function logLoss(
+  examples: LabeledExample[],
+  constants: ModelConstants,
+  defenseRatings?: DefenseRatings,
+  breakoutProfiles?: BreakoutProfiles,
+): number {
   let sum = 0;
   let count = 0;
   for (const ex of examples) {
-    const r = scoreOne(ex, constants);
+    const r = scoreOne(ex, constants, defenseRatings, breakoutProfiles);
     if (!r) continue;
     const p = Math.max(1e-6, Math.min(1 - 1e-6, r.p));
     sum += r.hit ? -Math.log(p) : -Math.log(1 - p);
@@ -113,7 +131,12 @@ function logLoss(examples: LabeledExample[], constants: ModelConstants): number 
 /** Calibration gap: mean |predicted - actual hit rate| across 5 buckets.
  *  Secondary metric — log-loss is the primary, but calibration gap is
  *  easier to interpret intuitively. */
-function calibrationGap(examples: LabeledExample[], constants: ModelConstants): number {
+function calibrationGap(
+  examples: LabeledExample[],
+  constants: ModelConstants,
+  defenseRatings?: DefenseRatings,
+  breakoutProfiles?: BreakoutProfiles,
+): number {
   const bins = [
     { lo: 0.5, hi: 0.6 },
     { lo: 0.6, hi: 0.7 },
@@ -128,7 +151,7 @@ function calibrationGap(examples: LabeledExample[], constants: ModelConstants): 
     let hits = 0;
     let n = 0;
     for (const ex of examples) {
-      const r = scoreOne(ex, constants);
+      const r = scoreOne(ex, constants, defenseRatings, breakoutProfiles);
       if (!r) continue;
       if (r.p < bin.lo || r.p >= bin.hi) continue;
       pSum += r.p;
@@ -164,6 +187,20 @@ const SWEEPS: ParamSweep[] = [
   { name: "homeAwayConfidencePerSide", candidates: [0.02, 0.03, 0.04, 0.05, 0.06] },
   { name: "daysRestConfidenceCap", candidates: [0.20, 0.30, 0.40, 0.50] },
   { name: "daysRestConfidencePerGame", candidates: [0.01, 0.02, 0.03, 0.04, 0.05] },
+
+  // ── New (Tier 1+2): defense rating + playoff context ──────────────
+  { name: "defenseRatingConfidenceBase", candidates: [0.05, 0.10, 0.15, 0.20, 0.25] },
+  { name: "defenseRatingConfidencePer30Games", candidates: [0.02, 0.04, 0.06, 0.08, 0.10] },
+  { name: "defenseRatingConfidenceCap", candidates: [0.20, 0.30, 0.40, 0.50, 0.60] },
+  { name: "defenseRatingShiftThresholdSigma", candidates: [0.05, 0.10, 0.15, 0.20, 0.25] },
+  { name: "playoffConfidenceBase", candidates: [0.05, 0.10, 0.15, 0.20, 0.25] },
+  { name: "playoffConfidencePerGame", candidates: [0.02, 0.04, 0.06, 0.08, 0.10] },
+  { name: "playoffConfidenceCap", candidates: [0.20, 0.30, 0.40, 0.50, 0.60] },
+  { name: "playoffShiftThresholdSigma", candidates: [0.10, 0.20, 0.25, 0.30, 0.40] },
+
+  // ── New (Tier 3): breakout context signal ─────────────────────────
+  { name: "breakoutConfidence", candidates: [0.30, 0.45, 0.60, 0.75, 0.90] },
+  { name: "breakoutShiftSigmaScale", candidates: [0.5, 1.0, 1.5, 2.0, 2.5] },
 
   // Shift thresholds — how much movement is required to fire a signal.
   { name: "recentFormShiftThresholdSigma", candidates: [0.10, 0.15, 0.20, 0.25, 0.30] },
@@ -237,6 +274,22 @@ export const MODEL_CONSTANTS = {
   daysRestConfidencePerGame: ${c.daysRestConfidencePerGame},
   daysRestConfidenceCap: ${c.daysRestConfidenceCap},
 
+  // ── Adjustment: opponent defensive rating ─────────────────────────
+  defenseRatingShiftThresholdSigma: ${c.defenseRatingShiftThresholdSigma},
+  defenseRatingConfidenceBase: ${c.defenseRatingConfidenceBase},
+  defenseRatingConfidencePer30Games: ${c.defenseRatingConfidencePer30Games},
+  defenseRatingConfidenceCap: ${c.defenseRatingConfidenceCap},
+
+  // ── Adjustment: playoff vs regular-season split ───────────────────
+  playoffShiftThresholdSigma: ${c.playoffShiftThresholdSigma},
+  playoffConfidenceBase: ${c.playoffConfidenceBase},
+  playoffConfidencePerGame: ${c.playoffConfidencePerGame},
+  playoffConfidenceCap: ${c.playoffConfidenceCap},
+
+  // ── Adjustment: breakout-rate context signal ──────────────────────
+  breakoutConfidence: ${c.breakoutConfidence},
+  breakoutShiftSigmaScale: ${c.breakoutShiftSigmaScale},
+
   // ── pMore clamp ────────────────────────────────────────────────────
   pMoreClampLow: ${c.pMoreClampLow},
   pMoreClampHigh: ${c.pMoreClampHigh},
@@ -259,6 +312,16 @@ async function main() {
   const all = buildDataset(players);
   console.log(`[tune] ${all.length.toLocaleString()} examples`);
 
+  console.log("[tune] building defense ratings from gamelogs…");
+  const defenseRatings = buildDefenseRatings(players);
+  const teamCount = Object.keys(defenseRatings.byTeam).length;
+  const statCount = Object.keys(defenseRatings.leagueAvg).length;
+  console.log(`[tune] defense ratings: ${teamCount} teams × ${statCount} stats`);
+
+  console.log("[tune] building breakout profiles from gamelogs…");
+  const breakoutProfiles = buildBreakoutProfiles(players, defenseRatings);
+  console.log(`[tune] breakout profiles: ${Object.keys(breakoutProfiles.byPlayer).length} players`);
+
   // 80/20 split, deterministic shuffle
   const shuffled = shuffle(all, 1234);
   const split = Math.floor(shuffled.length * 0.8);
@@ -274,10 +337,10 @@ async function main() {
 
   // ── Baseline ──────────────────────────────────────────────────
   const baselineConstants = { ...MODEL_CONSTANTS };
-  const baselineLossTrain = logLoss(trainSubset, baselineConstants);
-  const baselineLossHoldout = logLoss(holdout, baselineConstants);
-  const baselineCalibTrain = calibrationGap(trainSubset, baselineConstants);
-  const baselineCalibHoldout = calibrationGap(holdout, baselineConstants);
+  const baselineLossTrain = logLoss(trainSubset, baselineConstants, defenseRatings, breakoutProfiles);
+  const baselineLossHoldout = logLoss(holdout, baselineConstants, defenseRatings, breakoutProfiles);
+  const baselineCalibTrain = calibrationGap(trainSubset, baselineConstants, defenseRatings, breakoutProfiles);
+  const baselineCalibHoldout = calibrationGap(holdout, baselineConstants, defenseRatings, breakoutProfiles);
   console.log("");
   console.log(`Baseline log-loss:        train=${baselineLossTrain.toFixed(5)}  holdout=${baselineLossHoldout.toFixed(5)}`);
   console.log(`Baseline calibration gap: train=${(baselineCalibTrain * 100).toFixed(2)}%  holdout=${(baselineCalibHoldout * 100).toFixed(2)}%`);
@@ -288,16 +351,16 @@ async function main() {
   for (const sweep of SWEEPS) {
     const sweepStart = Date.now();
     let bestVal = current[sweep.name] as number;
-    let bestLoss = logLoss(trainSubset, current);
-    let bestCalib = calibrationGap(trainSubset, current);
+    let bestLoss = logLoss(trainSubset, current, defenseRatings, breakoutProfiles);
+    let bestCalib = calibrationGap(trainSubset, current, defenseRatings, breakoutProfiles);
     for (const cand of sweep.candidates) {
       if (cand === current[sweep.name]) continue;
       const trial = { ...current, [sweep.name]: cand };
-      const l = logLoss(trainSubset, trial);
+      const l = logLoss(trainSubset, trial, defenseRatings, breakoutProfiles);
       if (l < bestLoss) {
         bestLoss = l;
         bestVal = cand;
-        bestCalib = calibrationGap(trainSubset, trial);
+        bestCalib = calibrationGap(trainSubset, trial, defenseRatings);
       }
     }
     const changed = bestVal !== current[sweep.name];
@@ -312,8 +375,8 @@ async function main() {
   }
 
   // ── Evaluate on holdout ───────────────────────────────────────
-  const tunedLossHoldout = logLoss(holdout, current);
-  const tunedCalibHoldout = calibrationGap(holdout, current);
+  const tunedLossHoldout = logLoss(holdout, current, defenseRatings, breakoutProfiles);
+  const tunedCalibHoldout = calibrationGap(holdout, current, defenseRatings, breakoutProfiles);
   console.log("");
   console.log(`Tuned log-loss on holdout:        ${tunedLossHoldout.toFixed(5)}  (Δ ${(tunedLossHoldout - baselineLossHoldout).toFixed(5)})`);
   console.log(`Tuned calibration gap on holdout: ${(tunedCalibHoldout * 100).toFixed(2)}%   (Δ ${((tunedCalibHoldout - baselineCalibHoldout) * 100).toFixed(2)}%)`);

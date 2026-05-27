@@ -20,11 +20,18 @@ import { fetchSeasonLogs } from "@/lib/backtest/fetchSeasonLogs";
 import { synthesizeAllRows } from "@/lib/backtest/synthesizeLines";
 import { scoreModel } from "@/lib/backtest/scoreModel";
 import { aggregate, type ScoredPick } from "@/lib/backtest/aggregate";
-import { fitMultiOddsCalibration } from "@/lib/backtest/fitCalibration";
+import { fitPerStatCalibration } from "@/lib/backtest/fitCalibration";
+import { buildDefenseRatings } from "@/lib/backtest/defenseRatings";
+import { buildBreakoutProfiles } from "@/lib/backtest/breakoutProfile";
+import { crossValidateCalibration, walkForwardValidate } from "@/lib/backtest/crossValidate";
 
 const DATA_DIR = path.join(process.cwd(), "data", "backtest");
 const REPORT_PATH = path.join(DATA_DIR, "report.json");
 const CALIBRATION_PATH = path.join(DATA_DIR, "calibration.json");
+const DEFENSE_PATH = path.join(DATA_DIR, "defenseRatings.json");
+const BREAKOUT_PATH = path.join(DATA_DIR, "breakoutProfiles.json");
+const CV_PATH = path.join(DATA_DIR, "crossValidation.json");
+const WALKFWD_PATH = path.join(DATA_DIR, "walkForward.json");
 
 async function main() {
   const t0 = Date.now();
@@ -35,7 +42,24 @@ async function main() {
   const cache = await fetchSeasonLogs({ force });
   console.log(`[backtest] gamelogs: ${cache.players.length} players`);
 
-  // ── 2. Synthesize lines per (player, game, stat) ─────────────
+  // ── 2a. Build per-team defensive ratings from the gamelog corpus ─
+  const defense = buildDefenseRatings(cache.players);
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.writeFile(DEFENSE_PATH, JSON.stringify(defense, null, 2));
+  const teamCount = Object.keys(defense.byTeam).length;
+  const statCount = Object.keys(defense.leagueAvg).length;
+  console.log(`[backtest] defense ratings: ${teamCount} teams × ${statCount} stats → ${DEFENSE_PATH}`);
+
+  // ── 2a-ii. Per-player breakout-rate profiles ────────────────────
+  const breakout = buildBreakoutProfiles(cache.players, defense);
+  await fs.writeFile(BREAKOUT_PATH, JSON.stringify(breakout, null, 2));
+  const playersWithProfiles = Object.keys(breakout.byPlayer).length;
+  console.log(
+    `[backtest] breakout profiles: ${playersWithProfiles} players, ` +
+      `baseline rates per stat → ${BREAKOUT_PATH}`,
+  );
+
+  // ── 2b. Synthesize lines per (player, game, stat) ────────────────
   const rows = synthesizeAllRows(cache.players);
   console.log(`[backtest] synthesized ${rows.length.toLocaleString()} candidate rows`);
 
@@ -44,6 +68,7 @@ async function main() {
 
   // ── 4. Score every row, three times (one per oddsType) ───────
   const picks: ScoredPick[] = [];
+  const datedPairs: Array<{ predicted: number; hit: boolean; date: string }> = [];
   let scored = 0;
   let skipped = 0;
   const tScoreStart = Date.now();
@@ -71,6 +96,8 @@ async function main() {
         propOpponent: row.opponent,
         propIsHome: row.atVs === "vs" ? true : row.atVs === "@" ? false : undefined,
         propGameTime: row.date,
+        defenseRatings: defense,
+        breakoutProfiles: breakout,
       });
       if (!out) {
         skipped++;
@@ -93,6 +120,7 @@ async function main() {
         line,
         actualValue: row.actualValue,
       });
+      datedPairs.push({ predicted: predictedPMore, hit, date: row.date });
       scored++;
     }
   }
@@ -107,21 +135,62 @@ async function main() {
   await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2));
   console.log(`[backtest] wrote ${REPORT_PATH}`);
 
-  // ── 6. Fit isotonic calibration per oddsType (+ global fallback) ─
+  // ── 6. Fit per-stat × per-oddsType isotonic calibration ──────────
   const pairs = picks.map((p) => ({
     predicted: p.predictedPMore,
     hit: p.hit,
     oddsType: p.oddsType,
+    stat: p.stat,
   }));
-  const calibration = fitMultiOddsCalibration(pairs);
+  const calibration = fitPerStatCalibration(pairs);
   await fs.writeFile(CALIBRATION_PATH, JSON.stringify(calibration, null, 2));
+  const statCells = Object.keys(calibration.byStatOdds);
   console.log(
     `[backtest] wrote ${CALIBRATION_PATH} ` +
-      `(all: ${calibration.all.breakpoints.length} bp / ${calibration.all.trainingSize.toLocaleString()} pairs, ` +
-      `standard: ${calibration.standard.breakpoints.length} bp / ${calibration.standard.trainingSize.toLocaleString()}, ` +
-      `goblin: ${calibration.goblin.breakpoints.length} bp / ${calibration.goblin.trainingSize.toLocaleString()}, ` +
-      `demon: ${calibration.demon.breakpoints.length} bp / ${calibration.demon.trainingSize.toLocaleString()})`,
+      `(all: ${calibration.all.breakpoints.length} bp, ` +
+      `per-odds: 3 curves, ` +
+      `per-stat×odds: ${statCells.length} stats × ≤3 cells from ${calibration.trainingSize.toLocaleString()} pairs)`,
   );
+  for (const stat of statCells) {
+    const row = calibration.byStatOdds[stat];
+    const parts: string[] = [];
+    for (const ot of ["standard", "goblin", "demon"] as const) {
+      if (row[ot]) parts.push(`${ot}=${row[ot].breakpoints.length}bp/${row[ot].trainingSize.toLocaleString()}`);
+    }
+    console.log(`    · ${stat.padEnd(20)} ${parts.join("  ")}`);
+  }
+
+  // ── 6b. 5-fold CV — measures calibration stability ──────────────
+  console.log(`[backtest] running 5-fold cross-validation…`);
+  const cvReport = crossValidateCalibration(
+    pairs.map((p) => ({ predicted: p.predicted, hit: p.hit })),
+    5,
+  );
+  await fs.writeFile(CV_PATH, JSON.stringify(cvReport, null, 2));
+  console.log(
+    `[backtest] wrote ${CV_PATH} ` +
+      `(5-fold held-out global residual: ${(cvReport.globalMeanResidual * 100).toFixed(2)}% ` +
+      `± ${(cvReport.globalStdResidual * 100).toFixed(2)}%)`,
+  );
+
+  // ── 6c. Walk-forward validation — temporal drift detector ───────
+  console.log(`[backtest] running walk-forward validation by month…`);
+  const wfReport = walkForwardValidate(datedPairs);
+  await fs.writeFile(WALKFWD_PATH, JSON.stringify(wfReport, null, 2));
+  console.log(
+    `[backtest] wrote ${WALKFWD_PATH} ` +
+      `(${wfReport.months.length} evaluated months; ` +
+      `mean |residual| = ${(wfReport.meanAbsResidual * 100).toFixed(2)}%)`,
+  );
+  for (const m of wfReport.months) {
+    const sign = m.residual >= 0 ? "+" : "";
+    console.log(
+      `    · ${m.month}  train ${m.trainSize.toString().padStart(7)}  ` +
+        `eval ${m.evalSize.toString().padStart(6)}  ` +
+        `pred ${(m.meanPredicted * 100).toFixed(1)}%  actual ${(m.actualHitRate * 100).toFixed(1)}%  ` +
+        `Δ ${sign}${(m.residual * 100).toFixed(2)}%`,
+    );
+  }
 
   // ── 7. Console summary ────────────────────────────────────────
   console.log("");

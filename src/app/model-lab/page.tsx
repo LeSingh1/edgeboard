@@ -12,11 +12,16 @@ import {
 import { useEffect, useState } from "react";
 import {
   POWER_MULTIPLIERS,
+  POWER_FIRST_PLACE,
+  POWER_PROVENANCE,
   FLEX_PAYOUT_TABLES,
+  FLEX_FIRST_PLACE,
+  ODDS_FACTOR,
+  PAYOUT_SCHEDULE_VERIFIED_AT,
   type FlexTier,
 } from "@/lib/optimizer";
+import { cn } from "@/lib/cn";
 import { useBankrollStore, bankrollSummary } from "@/stores/bankrollStore";
-import { PlayoffTrainPanel } from "@/components/PlayoffTrainPanel";
 import { BacktestReport } from "@/components/BacktestReport";
 import type { LeagueSummary, OddsType, Prop } from "@/lib/types";
 
@@ -55,14 +60,10 @@ export default function ModelLabPage() {
         matrix, and your bankroll history. No mock data.
       </p>
 
-      {/* Playoff training panel — full-width above the grid since this is
-          the most important thing on the page right now (data enrichment
-          for the active postseason). */}
+      {/* Backtest report — full-width above the grid. The trained
+          calibration, k-fold CV stability, and walk-forward drift chart
+          all live in this component. */}
       <div className="mt-12">
-        <PlayoffTrainPanel />
-      </div>
-
-      <div className="mt-6">
         <BacktestReport />
       </div>
 
@@ -245,7 +246,7 @@ function DistributionPanel({
         <div className="flex items-center gap-2 text-white/50 py-6">
           <Loader2 size={18} className="animate-spin" /> loading live props…
         </div>
-      ) : !data ? (
+      ) : !data || data.total === undefined || !data.props ? (
         <div className="text-[#F87171] text-sm py-4">Couldn&apos;t reach PrizePicks. Try refresh.</div>
       ) : (
         <DistributionContent data={data} />
@@ -359,6 +360,12 @@ function DistributionContent({ data }: { data: ApiResponse }) {
 // ════════════════════════════════════════════════════════════════════
 
 function OddsReferencePanel() {
+  // Derive implied pMore from the per-pick payout factor so the table
+  // can't drift from the EV math. (factor > 1 → implied pMore < 0.5, etc.)
+  const demonFactor = ODDS_FACTOR.demon;
+  const goblinFactor = ODDS_FACTOR.goblin;
+  const demonPMore = 1 / (1 + demonFactor);
+  const goblinPMore = goblinFactor / (1 + goblinFactor);
   return (
     <Panel
       icon={TrendingUp}
@@ -367,28 +374,68 @@ function OddsReferencePanel() {
       accent="#FF6B35"
       accent2="#00F5D4"
     >
+      {/* Provenance banner */}
+      <div className="rounded-lg border border-[#FFE600]/40 bg-[#FFE600]/5 px-3 py-2 mb-4 text-[11px] text-white/75 leading-relaxed">
+        <span className="font-bold text-[#FFE600]">Two payout schedules.</span>{" "}
+        <span className="text-[#4ADE80] font-bold">Min Guarantee</span> is the
+        deterministic floor — what you&apos;re actually playing for, and what
+        EdgeBoard uses for &ldquo;if it lands&rdquo; and EV math.{" "}
+        <span className="text-[#FF6B35] font-bold">1st place pays</span> is the
+        tournament-pool upside (variable, not guaranteed). Both are shown side
+        by side. Help-center reference dated{" "}
+        <span className="font-mono">{PAYOUT_SCHEDULE_VERIFIED_AT}</span>; 6-pick
+        MG back-solved from a 2-goblin lineup screenshot — flagged as estimate
+        until we&apos;ve verified more stacks.
+      </div>
+
       <div>
         <div className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-[#FF6B35] mb-2">
           Power Play
         </div>
         <div className="grid grid-cols-5 gap-1 text-center">
-          {[2, 3, 4, 5, 6].map((k) => (
-            <div
-              key={k}
-              className="rounded-lg border-2 border-[#FF6B35] py-2 px-1"
-            >
-              <div className="text-[10px] text-white/60 font-bold uppercase">{k}-pick</div>
-              <div className="font-[family-name:var(--font-heading)] font-black text-xl text-[#FFE600]">
-                {POWER_MULTIPLIERS[k]}×
+          {[2, 3, 4, 5, 6].map((k) => {
+            const conf = POWER_PROVENANCE[k] === "confirmed";
+            const mg = POWER_MULTIPLIERS[k];
+            const first = POWER_FIRST_PLACE[k];
+            return (
+              <div
+                key={k}
+                className="rounded-lg border-2 border-[#FF6B35] py-2 px-1 relative"
+              >
+                <div className="text-[10px] text-white/60 font-bold uppercase">{k}-pick</div>
+                <div
+                  className="font-[family-name:var(--font-heading)] font-black text-xl text-[#4ADE80]"
+                  title="Minimum Guarantee — deterministic floor"
+                >
+                  {mg}×
+                </div>
+                <div className="text-[9px] text-white/45 uppercase font-bold leading-none mt-0.5">MG</div>
+                <div
+                  className="text-[10px] text-[#FF6B35] font-bold mt-1"
+                  title="1st place pays — tournament upside, not guaranteed"
+                >
+                  {first}× 1st
+                </div>
+                <div
+                  className={cn(
+                    "mt-1 inline-block px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider",
+                    conf
+                      ? "bg-[#4ADE80]/20 text-[#4ADE80]"
+                      : "bg-white/10 text-white/45",
+                  )}
+                  title={conf ? "Confirmed from a PrizePicks screenshot" : "Estimated"}
+                >
+                  {conf ? "Conf" : "Est"}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       <div className="mt-4">
         <div className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-[#00F5D4] mb-2">
-          Flex Play
+          Flex Play <span className="text-white/40 text-[9px] ml-1">(MG / 1st place)</span>
         </div>
         <table className="w-full text-xs">
           <thead>
@@ -397,27 +444,52 @@ function OddsReferencePanel() {
               <th className="text-right p-1 font-bold">All hit</th>
               <th className="text-right p-1 font-bold">−1 miss</th>
               <th className="text-right p-1 font-bold">−2 miss</th>
+              <th className="text-right p-1 font-bold">Source</th>
             </tr>
           </thead>
           <tbody>
             {Object.entries(FLEX_PAYOUT_TABLES).map(([size, tiers]) => {
               const sortedTiers: FlexTier[] = [...tiers].sort((a, b) => b.hits - a.hits);
+              const firstTiers: FlexTier[] = [...(FLEX_FIRST_PLACE[Number(size)] ?? [])].sort(
+                (a, b) => b.hits - a.hits,
+              );
               const sizeNum = Number(size);
+              const allConfirmed = sortedTiers.every((t) => t.source === "confirmed");
               return (
                 <tr key={size} className="border-t border-white/10">
                   <td className="p-1 font-[family-name:var(--font-heading)] font-black">{size}</td>
                   {[sizeNum, sizeNum - 1, sizeNum - 2].map((hits, idx) => {
                     const tier = sortedTiers.find((t) => t.hits === hits);
+                    const firstTier = firstTiers.find((t) => t.hits === hits);
                     return (
-                      <td key={idx} className="p-1 text-right">
+                      <td key={idx} className="p-1 text-right whitespace-nowrap">
                         {tier ? (
-                          <span className="text-[#00F5D4] font-bold">{tier.multiplier}×</span>
+                          <>
+                            <span className="text-[#4ADE80] font-bold">{tier.multiplier}×</span>
+                            {firstTier && firstTier.multiplier !== tier.multiplier && (
+                              <span className="text-[#FF6B35] text-[10px] ml-1">
+                                / {firstTier.multiplier}×
+                              </span>
+                            )}
+                          </>
                         ) : (
                           <span className="text-white/20">—</span>
                         )}
                       </td>
                     );
                   })}
+                  <td className="p-1 text-right">
+                    <span
+                      className={cn(
+                        "inline-block px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider",
+                        allConfirmed
+                          ? "bg-[#4ADE80]/20 text-[#4ADE80]"
+                          : "bg-white/10 text-white/45",
+                      )}
+                    >
+                      {allConfirmed ? "Conf" : "Est"}
+                    </span>
+                  </td>
                 </tr>
               );
             })}
@@ -430,13 +502,27 @@ function OddsReferencePanel() {
           Odds-type modifiers
         </div>
         <div className="space-y-1.5 text-xs">
-          <RefRow color="#FF6B35" label="Demon" payout="×1.25" pMore="40%" pLess="60%" />
-          <RefRow color="#FFFFFF" label="Standard" payout="×1.00" pMore="50%" pLess="50%" />
-          <RefRow color="#4ADE80" label="Goblin" payout="×0.85" pMore="58.8%" pLess="41.2%" />
+          <RefRow
+            color="#FF6B35"
+            label="Demon"
+            payout={`×${demonFactor.toFixed(2)}`}
+            pMore={`${(demonPMore * 100).toFixed(1)}%`}
+            pLess={`${((1 - demonPMore) * 100).toFixed(1)}%`}
+          />
+          <RefRow color="#FFFFFF" label="Standard" payout="×1.00" pMore="50.0%" pLess="50.0%" />
+          <RefRow
+            color="#4ADE80"
+            label="Goblin"
+            payout={`×${goblinFactor.toFixed(2)}`}
+            pMore={`${(goblinPMore * 100).toFixed(1)}%`}
+            pLess={`${((1 - goblinPMore) * 100).toFixed(1)}%`}
+          />
         </div>
         <p className="text-white/50 text-[10px] mt-2 leading-relaxed">
-          Each demon in a lineup multiplies the final payout by 1.25; each goblin by 0.85. Modifiers
-          stack multiplicatively. Implied probabilities derived from the modifier offset.
+          Factors are read live from <code className="text-[#FFE600]">ODDS_FACTOR</code> in
+          the optimizer — same source as the EV math, so the table can&apos;t drift from what
+          the model actually pays out with. Modifiers stack multiplicatively per pick. Implied
+          probabilities derived from the factor offset; verify against the PP lineup screen.
         </p>
       </div>
     </Panel>

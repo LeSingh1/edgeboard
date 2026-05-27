@@ -13,6 +13,21 @@ import type { Prop } from "@/lib/types";
 import { MODEL_CONSTANTS as C } from "@/lib/modelConstants";
 import { calibrate, getCalibration } from "@/lib/applyCalibration";
 import type { OddsTypeKey } from "@/lib/backtest/fitCalibration";
+import {
+  getDefenseRatings,
+  getDefensiveDeltaSync,
+} from "@/lib/applyDefenseRatings";
+import { isPlayoffDate } from "@/lib/playoffWindow";
+import {
+  getBreakoutProfiles,
+  breakoutExcessSync,
+} from "@/lib/applyBreakoutProfile";
+import {
+  getPlayoffCalibration,
+  getRound2Teams,
+  isRound2TeamSync,
+  applyPlayoffCalibrationSync,
+} from "@/lib/applyPlayoffCalibration";
 
 export interface ProjectionAdjustment {
   /** "Recent form", "vs NY Knicks", "Home/Away", etc. */
@@ -27,6 +42,15 @@ export interface ProjectionAdjustment {
   confidence: number;
 }
 
+export interface RecentGameMeta {
+  /** Opponent abbreviation for THIS game (not the current prop's opponent). */
+  opponent?: string;
+  /** ISO date string of THIS game. */
+  date?: string;
+  /** "@" away, "vs" home. */
+  atVs?: string;
+}
+
 export interface RealProjection {
   pMore: number;              // FINAL pMore after all adjustments
   pLess: number;
@@ -34,6 +58,9 @@ export interface RealProjection {
   sigma: number;
   sampleSize: number;
   recent: number[];           // last few raw values for the chart / explainer
+  /** Per-game metadata aligned 1:1 with `recent`. Optional — only populated
+   *  on the NBA/WNBA path, where we carry opponents/dates through. */
+  recentMeta?: RecentGameMeta[];
   source: string;             // e.g. "MLB Stats API · last 49 games"
   modelVersion: string;       // e.g. "mlb-rolling-v1"
   /** Baseline (pre-adjustment) projection for transparency in the explainer. */
@@ -127,6 +154,18 @@ function applyAdjustments(
     /** ISO timestamp of the prop's game — used to compute days-rest from the
      *  previous gamelog entry. */
     propGameTime?: string;
+    /** Stat name (e.g. "Points") — used by the defensive-rating signal. */
+    propStat?: string;
+    /** Player display name — used by the breakout-profile lookup. */
+    playerName?: string;
+    /** Net pMore swing from press-conference / news intel (`heuristicIntel.ts`
+     *  + `claudeIntel.ts`), pre-computed by the caller and passed in. Positive =
+     *  intel favors MORE. Applied as a direct probability swing AFTER the
+     *  mean-based signals — intel speaks to outcomes, not the mean. */
+    intelSwing?: number;
+    /** Short evidence string from the intel pipeline, surfaced in the
+     *  adjustments breakdown row. Optional cosmetic. */
+    intelEvidence?: string;
   },
 ): ProjectionResult {
   const adjustments: ProjectionAdjustment[] = [];
@@ -264,9 +303,11 @@ function applyAdjustments(
       }
       if (prevDay !== null) {
         const daysRest = Math.floor((propDay - prevDay) / (24 * 60 * 60 * 1000));
-        // Bucket the gamelog into 0 / 1 / 2 / 3+ rest days based on the gap to
-        // the PREVIOUS gamelog entry, then take the mean of the bucket the
-        // prop's rest falls into.
+        // Bucketing: B2B (≤1d) / 1-day rest (=2d) / 2+ rest (≥3d).
+        // Consecutive-day games sometimes parse as 0 and sometimes as 1 depending
+        // on whether ESPN includes timestamps; collapsing those preserves the
+        // fatigue signal across both cases.
+        const restBucket = daysRest <= 1 ? 0 : daysRest === 2 ? 1 : 2;
         const bucketValues: number[] = [];
         for (let i = 1; i < signals.dates.length; i++) {
           const da = signals.dates[i - 1];
@@ -276,10 +317,8 @@ function applyAdjustments(
             (new Date(db).getTime() - new Date(da).getTime()) / (24 * 60 * 60 * 1000),
           );
           if (!Number.isFinite(gap) || gap < 0) continue;
-          // Match the prop's rest bucket (collapse 3+ together)
-          const propBucket = Math.min(3, Math.max(0, daysRest));
-          const gameBucket = Math.min(3, Math.max(0, gap));
-          if (gameBucket === propBucket) bucketValues.push(signals.chronoValues[i]);
+          const gameBucket = gap <= 1 ? 0 : gap === 2 ? 1 : 2;
+          if (gameBucket === restBucket) bucketValues.push(signals.chronoValues[i]);
         }
         if (bucketValues.length >= 5) {
           const bucketMean = bucketValues.reduce((a, b) => a + b, 0) / bucketValues.length;
@@ -291,13 +330,7 @@ function applyAdjustments(
             );
             const blendedShift = shift * confidence;
             const restLabel =
-              daysRest === 0
-                ? "Back-to-back"
-                : daysRest === 1
-                  ? "1 day rest"
-                  : daysRest === 2
-                    ? "2 days rest"
-                    : "3+ days rest";
+              restBucket === 0 ? "Back-to-back" : restBucket === 1 ? "1 day rest" : "2+ days rest";
             adjustments.push({
               label: restLabel,
               shift: r3(blendedShift),
@@ -314,19 +347,166 @@ function applyAdjustments(
     }
   }
 
-  // No adjustments fired → return baseline untouched
-  if (adjustments.length === 0) return baseline;
+  // ── (5) Opponent defensive rating ────────────────────────────────
+  //   Loaded from `data/backtest/defenseRatings.json`. If absent or stale
+  //   the signal silently no-ops.
+  if (signals.propOpponent && signals.propStat) {
+    const dd = getDefensiveDeltaSync(signals.propOpponent, signals.propStat);
+    if (dd && Math.abs(dd.delta) > sigma * C.defenseRatingShiftThresholdSigma) {
+      const buckets30 = Math.floor(dd.sample / 30);
+      const confidence = Math.min(
+        C.defenseRatingConfidenceCap,
+        C.defenseRatingConfidenceBase + buckets30 * C.defenseRatingConfidencePer30Games,
+      );
+      const blendedShift = dd.delta * confidence;
+      adjustments.push({
+        label: `${signals.propOpponent} defense`,
+        shift: r3(blendedShift),
+        pMoreSwing: 0,
+        reason:
+          `${signals.propOpponent} allows ${r3(dd.delta)} more ${signals.propStat.toLowerCase()} ` +
+          `per game than league avg (${dd.sample} games observed).`,
+        confidence,
+      });
+      adjustedMean += blendedShift;
+    }
+  }
 
-  // Recompute pMore from the adjusted mean
+  // ── (5b) Contextual breakout signal ──────────────────────────────
+  //   Per-player breakout-frequency profile. When the player's rate in
+  //   the current context bucket exceeds the league baseline by 1.3x,
+  //   apply an upward shift proportional to the excess × σ × confidence.
+  if (signals.playerName && signals.propStat) {
+    const oppDelta =
+      signals.propOpponent
+        ? (getDefensiveDeltaSync(signals.propOpponent, signals.propStat)?.delta ?? null)
+        : null;
+    const breakout = breakoutExcessSync({
+      playerName: signals.playerName,
+      stat: signals.propStat,
+      context: {
+        opponentDefenseDelta: oppDelta,
+        isHome: signals.propIsHome,
+        isPlayoff: !!signals.propGameTime && isPlayoffDate(signals.propGameTime),
+      },
+    });
+    if (breakout) {
+      // The shift is breakout EXCESS × sigma × scale × confidence.
+      // Excess (e.g. 0.18 = 18 pts above league baseline) × σ × scale gives a
+      // shift on the projection-mean axis; multiplied by the breakout confidence.
+      const blendedShift =
+        breakout.excess * sigma * C.breakoutShiftSigmaScale * C.breakoutConfidence;
+      adjustments.push({
+        label: "Breakout history",
+        shift: r3(blendedShift),
+        pMoreSwing: 0,
+        reason:
+          `Player breaks out ${(breakout.excess * 100).toFixed(0)}pp more often than league avg ` +
+          `in this context (${breakout.bucket}, ${breakout.sample} games).`,
+        confidence: C.breakoutConfidence,
+      });
+      adjustedMean += blendedShift;
+    }
+  }
+
+  // ── (6) Playoff vs regular-season split ──────────────────────────
+  //   When the target game is in the playoff window, compare the player's
+  //   prior playoff output to their regular-season output for the same stat.
+  if (signals.propGameTime && isPlayoffDate(signals.propGameTime) && signals.dates) {
+    const playoffVals: number[] = [];
+    const regVals: number[] = [];
+    for (let i = 0; i < signals.dates.length; i++) {
+      const d = signals.dates[i];
+      if (!d) continue;
+      if (isPlayoffDate(d)) playoffVals.push(signals.chronoValues[i]);
+      else regVals.push(signals.chronoValues[i]);
+    }
+    if (playoffVals.length >= 3 && regVals.length >= 5) {
+      const pMean = playoffVals.reduce((a, b) => a + b, 0) / playoffVals.length;
+      const rMean = regVals.reduce((a, b) => a + b, 0) / regVals.length;
+      const shift = pMean - rMean;
+      if (Math.abs(shift) > sigma * C.playoffShiftThresholdSigma) {
+        const confidence = Math.min(
+          C.playoffConfidenceCap,
+          C.playoffConfidenceBase + playoffVals.length * C.playoffConfidencePerGame,
+        );
+        const blendedShift = shift * confidence;
+        adjustments.push({
+          label: "Playoff context",
+          shift: r3(blendedShift),
+          pMoreSwing: 0,
+          reason:
+            `${playoffVals.length} playoff games avg ${r3(pMean)} vs ` +
+            `${regVals.length} regular-season games avg ${r3(rMean)}.`,
+          confidence,
+        });
+        adjustedMean += blendedShift;
+      }
+    }
+  }
+
+  const hasIntelSwing = typeof signals.intelSwing === "number" && Math.abs(signals.intelSwing) > 1e-4;
+
+  // No adjustments fired AND no intel swing → return baseline untouched
+  if (adjustments.length === 0 && !hasIntelSwing) return baseline;
+
+  // Recompute pMore from the adjusted mean (intel swing applied after).
   const adjZ = (line - adjustedMean) / sigma;
-  const adjustedPMore = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, 1 - cdfNormal(adjZ)));
+  let meanAdjustedPMore = Math.max(C.pMoreClampLow, Math.min(C.pMoreClampHigh, 1 - cdfNormal(adjZ)));
 
-  // Back-fill each adjustment's pMore swing for the UI breakdown.
-  // We approximate: each adjustment contributes proportionally to its shift.
+  // Back-fill mean-based adjustments' pMore swing for the UI breakdown.
   const totalShift = adjustments.reduce((s, a) => s + a.shift, 0);
-  const totalSwing = adjustedPMore - baseline.pMore;
+  const meanSwing = meanAdjustedPMore - baseline.pMore;
   for (const a of adjustments) {
-    a.pMoreSwing = r3(totalShift === 0 ? 0 : (a.shift / totalShift) * totalSwing);
+    a.pMoreSwing = r3(totalShift === 0 ? 0 : (a.shift / totalShift) * meanSwing);
+  }
+
+  // Apply intel swing AFTER mean-based signals. Intel speaks to outcomes,
+  // not to the mean — clamp the same way we clamp the mean-based path.
+  if (hasIntelSwing) {
+    const intelSwing = signals.intelSwing!;
+    const intelAdjusted = Math.max(
+      C.pMoreClampLow,
+      Math.min(C.pMoreClampHigh, meanAdjustedPMore + intelSwing),
+    );
+    const actualIntelSwing = intelAdjusted - meanAdjustedPMore;
+    adjustments.push({
+      label: "Press conference / news",
+      shift: 0, // intel doesn't shift the mean
+      pMoreSwing: r3(actualIntelSwing),
+      reason:
+        signals.intelEvidence ||
+        `Aggregated heuristic + Claude signals from team news + press conferences.`,
+      confidence: 1,
+    });
+    meanAdjustedPMore = intelAdjusted;
+  }
+  const adjustedPMore = meanAdjustedPMore;
+
+  // Align the last-N opponent / date metadata with the last-N `recent`
+  // values so the UI can render the actual opponent of each game (not the
+  // current prop's opponent for every row). Slice tail.
+  const n = baseline.recent.length;
+  let recentMeta: RecentGameMeta[] | undefined;
+  if (
+    n > 0 &&
+    signals.chronoValues.length === signals.opponents.length &&
+    (!signals.dates || signals.chronoValues.length === signals.dates.length)
+  ) {
+    const len = signals.chronoValues.length;
+    recentMeta = [];
+    for (let k = 0; k < n; k++) {
+      const idx = len - n + k;
+      if (idx < 0) {
+        recentMeta.push({});
+      } else {
+        recentMeta.push({
+          opponent: signals.opponents[idx],
+          date: signals.dates?.[idx],
+          atVs: signals.atVs?.[idx],
+        });
+      }
+    }
   }
 
   return {
@@ -337,6 +517,7 @@ function applyAdjustments(
     baselineProjection: baseline.projection,
     baselinePMore: baseline.pMore,
     adjustments,
+    recentMeta,
   };
 }
 
@@ -841,6 +1022,10 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
     propOpponent: prop.opponent,
     propIsHome,
     propGameTime: prop.gameTime,
+    propStat: prop.statType,
+    playerName: prop.playerName,
+    intelSwing: prop.intelSwing,
+    intelEvidence: prop.intelEvidence,
   });
 }
 
@@ -858,8 +1043,22 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
   // detects the segment via prop.sport and scales the player's ESPN gamelog
   // accordingly: 1Q multiplies by 0.25, 1H/2H by 0.5, full game by 1.0.
   if (sport.startsWith("NBA") || sport.startsWith("WNBA")) {
+    // Warm caches up front so the sync accessors hit.
+    await Promise.all([
+      getDefenseRatings(),
+      getCalibration(),
+      getPlayoffCalibration(),
+      getRound2Teams(),
+      getBreakoutProfiles(),
+    ]);
     const raw = await nbaProjection(prop);
-    return applyCalibrationToResult(raw, prop.oddsType as OddsTypeKey);
+    return applyCalibrationToResult(
+      raw,
+      prop.oddsType as OddsTypeKey,
+      prop.statType,
+      prop.gameTime,
+      prop.team,
+    );
   }
   return {
     available: false,
@@ -880,33 +1079,62 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
 async function applyCalibrationToResult(
   result: ProjectionResult,
   oddsType: OddsTypeKey | undefined,
+  stat?: string,
+  gameTime?: string,
+  team?: string,
 ): Promise<ProjectionResult> {
   if (!result.available) return result;
-  const model = await getCalibration();
-  if (!model) return result;
+  const baseModel = await getCalibration();
+  if (!baseModel) return result;
   const preferMore = result.pMore >= result.pLess;
   const chosen = preferMore ? result.pMore : result.pLess;
-  const corrected = await calibrate(chosen, oddsType);
+
+  // Stage 1 — base per-stat × per-oddsType calibration.
+  let corrected = await calibrate(chosen, oddsType, stat);
+
+  // Stage 2 — playoff overlay. Two conditions: (a) target game is in the
+  // playoff window, (b) the player's team is in the trained round-2 set.
+  // The overlay was fit on round-2-team postseason data; applying it to
+  // play-in games or non-round-2 teams would extrapolate the curve.
+  const inPlayoff = !!gameTime && isPlayoffDate(gameTime);
+  const teamIsRound2 = isRound2TeamSync(team);
+  let playoffApplied = false;
+  if (inPlayoff && teamIsRound2) {
+    const overlay = await getPlayoffCalibration();
+    if (overlay && overlay.breakpoints.length > 0) {
+      const after = applyPlayoffCalibrationSync(corrected);
+      if (Math.abs(after - corrected) > 1e-6) {
+        corrected = after;
+        playoffApplied = true;
+      }
+    }
+  }
+
   if (Math.abs(corrected - chosen) < 1e-6) return result;
+
   const calPMore = preferMore ? corrected : 1 - corrected;
   const calPLess = 1 - calPMore;
   const swing = calPMore - result.pMore;
   const calibrationAdjustment: ProjectionAdjustment = {
-    label: "Calibration",
+    label: playoffApplied ? "Calibration (playoff layered)" : "Calibration",
     shift: 0,
     pMoreSwing: r3(swing),
-    reason:
-      `Isotonic corrector (${oddsType ?? "all"}) trained on 2025-26 season — ` +
-      `raw model is overconfident; corrected to match observed hit rate.`,
+    reason: playoffApplied
+      ? `Base isotonic corrector (${stat ?? "any-stat"} · ${oddsType ?? "all"}) plus playoff-only ` +
+        `overlay (round-2 teams, 2025-26 postseason). Raw model corrected to match observed ` +
+        `playoff hit rate.`
+      : `Isotonic corrector (${stat ?? "any-stat"} · ${oddsType ?? "all"}) trained on 2025-26 season — ` +
+        `raw model is overconfident; corrected to match observed hit rate.`,
     confidence: 1,
   };
+  const versionSuffix = playoffApplied ? "+iso+playoff" : "+iso";
   return {
     ...result,
     pMore: r3(calPMore),
     pLess: r3(calPLess),
     adjustments: [...(result.adjustments ?? []), calibrationAdjustment],
-    modelVersion: result.modelVersion.includes("+iso")
+    modelVersion: result.modelVersion.includes(versionSuffix)
       ? result.modelVersion
-      : `${result.modelVersion}+iso`,
+      : `${result.modelVersion}${versionSuffix}`,
   };
 }

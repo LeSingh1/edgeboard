@@ -19,6 +19,12 @@
 import { ESPN_BASKETBALL_STATS } from "@/lib/realProjections";
 import { MODEL_CONSTANTS, type ModelConstants } from "@/lib/modelConstants";
 import type { PlayerGamelog } from "@/lib/backtest/fetchSeasonLogs";
+import { defensiveDelta, type DefenseRatings } from "@/lib/backtest/defenseRatings";
+import { isPlayoffDate } from "@/lib/playoffWindow";
+import {
+  breakoutExcess,
+  type BreakoutProfiles,
+} from "@/lib/backtest/breakoutProfile";
 
 export interface ScoreInput {
   player: PlayerGamelog;
@@ -38,6 +44,12 @@ export interface ScoreInput {
    *  tuner uses this to grid-search alternative values without forking
    *  the scoring function. */
   constants?: ModelConstants;
+  /** Per-team defensive ratings. When provided, fires the opponent-defense
+   *  signal. Optional — omit to keep parity with the original model. */
+  defenseRatings?: DefenseRatings;
+  /** Per-player breakout-rate profiles. When provided + player has data,
+   *  fires the breakout-context signal. */
+  breakoutProfiles?: BreakoutProfiles;
 }
 
 export interface ScoreOutput {
@@ -183,6 +195,10 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
   }
 
   // ── (4) Days rest: bucket gamelog gaps, match the target's rest ──
+  //   Bucketing: B2B (gap ≤ 1 day) / 1-day-rest (gap = 2) / 2+ rest (gap ≥ 3).
+  //   Back-to-back is the fatigue-driven case; we collapse 0 and 1 day
+  //   spreads because ESPN gamelog dates sometimes carry timestamps that
+  //   put consecutive-calendar-day games at 0 days and sometimes at 1.
   if (propGameTime) {
     const propDay = new Date(propGameTime).getTime();
     if (Number.isFinite(propDay)) {
@@ -198,6 +214,7 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
       }
       if (prevDay !== null) {
         const daysRest = Math.floor((propDay - prevDay) / (24 * 60 * 60 * 1000));
+        const restBucket = daysRest <= 1 ? 0 : daysRest === 2 ? 1 : 2; // 0=B2B, 1=1-day, 2=2+
         const bucketValues: number[] = [];
         for (let i = 1; i < priorDates.length; i++) {
           const da = priorDates[i - 1];
@@ -207,9 +224,8 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
             (new Date(db).getTime() - new Date(da).getTime()) / (24 * 60 * 60 * 1000),
           );
           if (!Number.isFinite(gap) || gap < 0) continue;
-          const propBucket = Math.min(3, Math.max(0, daysRest));
-          const gameBucket = Math.min(3, Math.max(0, gap));
-          if (gameBucket === propBucket) bucketValues.push(priorValues[i]);
+          const gameBucket = gap <= 1 ? 0 : gap === 2 ? 1 : 2;
+          if (gameBucket === restBucket) bucketValues.push(priorValues[i]);
         }
         if (bucketValues.length >= 5) {
           const bucketMean =
@@ -223,6 +239,67 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
             adjustedMean += shift * confidence;
           }
         }
+      }
+    }
+  }
+
+  // ── (5) Opponent defensive rating ───────────────────────────────
+  //   Shift toward the opponent team's typical allowance for this stat.
+  //   Sample-based confidence; only fires when |delta| meaningful.
+  if (input.propOpponent && input.defenseRatings) {
+    const dd = defensiveDelta(input.defenseRatings, input.propOpponent, stat);
+    if (dd && Math.abs(dd.delta) > sigma * C.defenseRatingShiftThresholdSigma) {
+      const buckets30 = Math.floor(dd.sample / 30);
+      const confidence = Math.min(
+        C.defenseRatingConfidenceCap,
+        C.defenseRatingConfidenceBase + buckets30 * C.defenseRatingConfidencePer30Games,
+      );
+      adjustedMean += dd.delta * confidence;
+    }
+  }
+
+  // ── (5b) Contextual breakout signal ──────────────────────────────
+  if (input.breakoutProfiles && input.propOpponent) {
+    const oppDelta =
+      defensiveDelta(input.defenseRatings ?? ({ byTeam: {}, leagueAvg: {} } as DefenseRatings), input.propOpponent, stat)?.delta ?? null;
+    const breakout = breakoutExcess({
+      profiles: input.breakoutProfiles,
+      playerName: player.name,
+      stat,
+      context: {
+        opponentDefenseDelta: oppDelta,
+        isHome: input.propIsHome,
+        isPlayoff: !!propGameTime && isPlayoffDate(propGameTime),
+      },
+    });
+    if (breakout) {
+      adjustedMean += breakout.excess * sigma * C.breakoutShiftSigmaScale * C.breakoutConfidence;
+    }
+  }
+
+  // ── (6) Playoff vs regular-season split ─────────────────────────
+  //   When the target game is a playoff game, compare the player's prior
+  //   playoff output to their regular-season output. Stars typically gain
+  //   minutes/usage; depth pieces typically lose them.
+  if (propGameTime && isPlayoffDate(propGameTime)) {
+    const playoffVals: number[] = [];
+    const regVals: number[] = [];
+    for (let i = 0; i < priorDates.length; i++) {
+      const d = priorDates[i];
+      if (!d) continue;
+      if (isPlayoffDate(d)) playoffVals.push(priorValues[i]);
+      else regVals.push(priorValues[i]);
+    }
+    if (playoffVals.length >= 3 && regVals.length >= 5) {
+      const pMean = playoffVals.reduce((a, b) => a + b, 0) / playoffVals.length;
+      const rMean = regVals.reduce((a, b) => a + b, 0) / regVals.length;
+      const shift = pMean - rMean;
+      if (Math.abs(shift) > sigma * C.playoffShiftThresholdSigma) {
+        const confidence = Math.min(
+          C.playoffConfidenceCap,
+          C.playoffConfidenceBase + playoffVals.length * C.playoffConfidencePerGame,
+        );
+        adjustedMean += shift * confidence;
       }
     }
   }

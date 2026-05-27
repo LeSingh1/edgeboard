@@ -1,17 +1,18 @@
 /**
  * Live-side calibration application.
  *
- * Loads `data/backtest/calibration.json` at first request (server-side,
- * cached in memory for the process lifetime). When `realProjections.ts`
- * finishes computing a pMore, it routes the value through `calibrate()` /
- * `calibrateSync()` (with the prop's oddsType) to get the corrected version.
+ * Loads `data/backtest/calibration.json` lazily on first request and
+ * caches in memory for the process lifetime. `realProjections.ts`
+ * routes every NBA/WNBA pMore through `calibrate(predicted, oddsType, stat)`.
  *
- * Supports two on-disk schemas for forward/backward compat:
- *   - Legacy: `{ breakpoints, trainingSize, fittedAt }` — one global curve
- *   - Current: `{ all, standard, goblin, demon, ... }` — per-oddsType curves
+ * Three on-disk schemas are supported for forward/backward compat:
+ *   1. Legacy single-curve `{ breakpoints, trainingSize, fittedAt }`
+ *   2. Per-oddsType `{ all, standard, goblin, demon }`
+ *   3. Per-stat × per-oddsType `{ all, byOddsType, byStatOdds }`
  *
- * Falls back to the input unchanged if the file doesn't exist, the model
- * is empty, or the `DISABLE_CALIBRATION=1` env kill-switch is set.
+ * Schema 3 falls back: stat+odds curve → oddsType curve → all curve.
+ *
+ * Kill-switch: `DISABLE_CALIBRATION=1` in server env.
  */
 
 import fs from "node:fs/promises";
@@ -19,16 +20,19 @@ import path from "node:path";
 import {
   applyCalibrationModel,
   isMultiOddsCalibrationModel,
+  isPerStatCalibrationModel,
   type CalibrationModel,
   type MultiOddsCalibrationModel,
   type OddsTypeKey,
+  type PerStatCalibrationModel,
 } from "@/lib/backtest/fitCalibration";
 
 const CALIBRATION_PATH = path.join(process.cwd(), "data", "backtest", "calibration.json");
 
-type LoadedModel = CalibrationModel | MultiOddsCalibrationModel;
+type LoadedModel = CalibrationModel | MultiOddsCalibrationModel | PerStatCalibrationModel;
 
-let cached: LoadedModel | null | undefined; // undefined = not yet attempted, null = tried but failed
+// Cache state — module-level. Source edits trigger HMR re-eval which resets.
+let cached: LoadedModel | null | undefined;
 let pendingLoad: Promise<void> | null = null;
 
 async function loadCalibration(): Promise<void> {
@@ -40,8 +44,6 @@ async function loadCalibration(): Promise<void> {
   }
 }
 
-/** Reset the in-memory cache. Useful if the user re-ran the backtest and
- *  wants the live process to pick up the new calibration without restart. */
 export function resetCalibrationCache(): void {
   cached = undefined;
   pendingLoad = null;
@@ -54,29 +56,51 @@ export async function getCalibration(): Promise<LoadedModel | null> {
   return cached ?? null;
 }
 
-function pickCurve(model: LoadedModel, oddsType?: OddsTypeKey): CalibrationModel {
-  if (!isMultiOddsCalibrationModel(model)) return model;
-  if (oddsType && model[oddsType].breakpoints.length > 0) return model[oddsType];
-  return model.all;
+function pickCurve(
+  model: LoadedModel,
+  oddsType?: OddsTypeKey,
+  stat?: string,
+): CalibrationModel {
+  if (isPerStatCalibrationModel(model)) {
+    if (stat && oddsType) {
+      const row = model.byStatOdds[stat];
+      if (row && row[oddsType] && row[oddsType].breakpoints.length > 0) {
+        return row[oddsType];
+      }
+    }
+    if (oddsType && model.byOddsType[oddsType]?.breakpoints.length > 0) {
+      return model.byOddsType[oddsType];
+    }
+    return model.all;
+  }
+  if (isMultiOddsCalibrationModel(model)) {
+    if (oddsType && model[oddsType].breakpoints.length > 0) return model[oddsType];
+    return model.all;
+  }
+  return model;
 }
 
 function isDisabled(): boolean {
   return process.env.DISABLE_CALIBRATION === "1";
 }
 
-/** Async calibrator. Routes by oddsType when the loaded model supports it. */
-export async function calibrate(predicted: number, oddsType?: OddsTypeKey): Promise<number> {
+export async function calibrate(
+  predicted: number,
+  oddsType?: OddsTypeKey,
+  stat?: string,
+): Promise<number> {
   if (isDisabled()) return predicted;
   const model = await getCalibration();
   if (!model) return predicted;
-  return applyCalibrationModel(pickCurve(model, oddsType), predicted);
+  return applyCalibrationModel(pickCurve(model, oddsType, stat), predicted);
 }
 
-/** Synchronous fast-path. Returns the input unchanged if calibration hasn't
- *  been loaded yet — callers that care should `await getCalibration()` once
- *  at startup to warm the cache. */
-export function calibrateSync(predicted: number, oddsType?: OddsTypeKey): number {
+export function calibrateSync(
+  predicted: number,
+  oddsType?: OddsTypeKey,
+  stat?: string,
+): number {
   if (isDisabled()) return predicted;
   if (cached === undefined || cached === null) return predicted;
-  return applyCalibrationModel(pickCurve(cached, oddsType), predicted);
+  return applyCalibrationModel(pickCurve(cached, oddsType, stat), predicted);
 }

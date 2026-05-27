@@ -54,6 +54,14 @@ export interface Prop {
   pMore: number;               // 0..1, derived from oddsType (PrizePicks-implied)
   pLess: number;               // 0..1
   modelVersion: string;        // 'implied-v1' | 'xgb-v1' (future)
+  // ── Intel pre-computation (optional, populated client-side) ──
+  /** Net pMore swing from press-conference / news intel (see /api/intel).
+   *  When set, the projection API applies it AFTER the mean-based signals,
+   *  baking it into the returned pMore and adding a "Press conference / news"
+   *  row to the adjustments breakdown. Positive = intel favors MORE. */
+  intelSwing?: number;
+  /** Short evidence summary surfaced in the adjustments row. Optional. */
+  intelEvidence?: string;
 }
 
 export type PickSide = "more" | "less";

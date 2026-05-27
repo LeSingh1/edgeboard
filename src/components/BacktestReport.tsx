@@ -35,8 +35,7 @@ interface SingleCalibrationData {
   breakpoints: Array<{ predicted: number; corrected: number }>;
 }
 
-/** Current per-oddsType shape — fit on standard / goblin / demon
- *  separately because their residuals diverge meaningfully. */
+/** Per-oddsType shape — fit on standard / goblin / demon separately. */
 interface MultiOddsCalibrationData {
   fittedAt: string;
   trainingSize: number;
@@ -46,10 +45,54 @@ interface MultiOddsCalibrationData {
   demon: SingleCalibrationData;
 }
 
-type CalibrationData = SingleCalibrationData | MultiOddsCalibrationData;
+/** Current per-stat × per-oddsType shape. */
+interface PerStatCalibrationData {
+  fittedAt: string;
+  trainingSize: number;
+  all: SingleCalibrationData;
+  byOddsType: Record<"standard" | "goblin" | "demon", SingleCalibrationData>;
+  byStatOdds: Record<string, Record<"standard" | "goblin" | "demon", SingleCalibrationData>>;
+}
+
+type CalibrationData =
+  | SingleCalibrationData
+  | MultiOddsCalibrationData
+  | PerStatCalibrationData;
 
 function isMultiOdds(c: CalibrationData): c is MultiOddsCalibrationData {
-  return "all" in c && "standard" in c && "goblin" in c && "demon" in c;
+  return "all" in c && "standard" in c && "goblin" in c && "demon" in c && !("byStatOdds" in c);
+}
+
+function isPerStat(c: CalibrationData): c is PerStatCalibrationData {
+  return "byStatOdds" in c && "byOddsType" in c;
+}
+
+interface CVBucket {
+  range: string;
+  meanResidual: number;
+  stdResidual: number;
+  foldNs: number[];
+}
+interface CVData {
+  folds: number;
+  totalPairs: number;
+  buckets: CVBucket[];
+  globalMeanResidual: number;
+  globalStdResidual: number;
+}
+
+interface WalkForwardMonth {
+  month: string;
+  trainSize: number;
+  evalSize: number;
+  meanPredicted: number;
+  actualHitRate: number;
+  residual: number;
+}
+interface WalkForwardData {
+  generatedAt: string;
+  months: WalkForwardMonth[];
+  meanAbsResidual: number;
 }
 
 interface ApiResponse {
@@ -57,6 +100,8 @@ interface ApiResponse {
   reason?: string;
   report?: BacktestReportData;
   calibration?: CalibrationData | null;
+  crossValidation?: CVData | null;
+  walkForward?: WalkForwardData | null;
 }
 
 /**
@@ -123,7 +168,12 @@ export function BacktestReport() {
       )}
 
       {!loading && data?.available && data.report && (
-        <Body report={data.report} calibration={data.calibration ?? null} />
+        <Body
+          report={data.report}
+          calibration={data.calibration ?? null}
+          crossValidation={data.crossValidation ?? null}
+          walkForward={data.walkForward ?? null}
+        />
       )}
     </section>
   );
@@ -154,9 +204,13 @@ function EmptyState({ reason }: { reason?: string }) {
 function Body({
   report,
   calibration,
+  crossValidation,
+  walkForward,
 }: {
   report: BacktestReportData;
   calibration: CalibrationData | null;
+  crossValidation: CVData | null;
+  walkForward: WalkForwardData | null;
 }) {
   const generatedLabel = new Date(report.generatedAt).toLocaleString(undefined, {
     month: "short",
@@ -200,6 +254,16 @@ function Body({
         </h3>
         <CalibrationTable buckets={report.buckets} />
       </div>
+
+      {/* 5-fold CV (post-calibration stability) */}
+      {crossValidation && crossValidation.folds > 0 && (
+        <CrossValidationSection cv={crossValidation} />
+      )}
+
+      {/* Walk-forward drift chart */}
+      {walkForward && walkForward.months.length > 0 && (
+        <WalkForwardSection wf={walkForward} />
+      )}
 
       {/* Per-oddsType breakouts */}
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -249,7 +313,18 @@ function Body({
             <Check size={18} strokeWidth={3} className="text-[#4ADE80] flex-shrink-0 mt-0.5" aria-hidden />
             <div className="flex-1">
               <div className="text-[#4ADE80] font-bold mb-0.5">
-                {isMultiOdds(calibration) ? (
+                {isPerStat(calibration) ? (
+                  <>
+                    Per-stat × per-oddsType calibration · {Object.keys(calibration.byStatOdds).length} stat cells
+                    <span className="text-white/55 text-xs font-normal ml-2">
+                      · all: {calibration.all.breakpoints.length}bp
+                      · std: {calibration.byOddsType.standard.breakpoints.length}bp
+                      · gob: {calibration.byOddsType.goblin.breakpoints.length}bp
+                      · dem: {calibration.byOddsType.demon.breakpoints.length}bp
+                      · from {calibration.trainingSize.toLocaleString()} picks
+                    </span>
+                  </>
+                ) : isMultiOdds(calibration) ? (
                   <>
                     Per-oddsType calibration fit from {calibration.trainingSize.toLocaleString()} picks
                     <span className="text-white/55 text-xs font-normal ml-2">
@@ -397,5 +472,442 @@ function residualColor(residual: number): string {
   if (abs < 0.02) return "#4ADE80";
   if (abs < 0.05) return "#FFE600";
   return "#F87171";
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 5-fold cross-validation panel
+// ════════════════════════════════════════════════════════════════════
+
+function CrossValidationSection({ cv }: { cv: CVData }) {
+  const globalAbs = Math.abs(cv.globalMeanResidual);
+  return (
+    <div className="mt-6 rounded-xl border-2 border-[#4ADE80]/30 bg-[#4ADE80]/5 p-4">
+      <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
+        <div>
+          <h3 className="text-white/85 text-xs uppercase tracking-widest font-bold">
+            5-fold cross-validation
+          </h3>
+          <p className="text-white/55 text-[11px] mt-0.5 max-w-2xl">
+            Post-calibration residual on held-out folds. Smaller = more reliable
+            calibration; large ± std = the curve is fitting noise.
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-widest text-white/45 font-bold">
+            Global held-out residual
+          </div>
+          <div
+            className="font-mono text-2xl font-black tabular-nums"
+            style={{ color: residualColor(globalAbs) }}
+          >
+            {cv.globalMeanResidual >= 0 ? "+" : ""}
+            {(cv.globalMeanResidual * 100).toFixed(2)}%
+            <span className="text-white/45 text-sm font-bold">
+              {" "}
+              ± {(cv.globalStdResidual * 100).toFixed(2)}%
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs font-mono">
+          <thead className="text-white/45 text-[10px] uppercase tracking-widest font-bold">
+            <tr>
+              <th className="text-left py-1.5">Bucket</th>
+              <th className="text-right py-1.5">Mean residual</th>
+              <th className="text-right py-1.5">±std</th>
+              <th className="text-right py-1.5">Avg fold n</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cv.buckets.map((b) => {
+              const avgN = Math.round(
+                b.foldNs.reduce((a, n) => a + n, 0) / Math.max(1, b.foldNs.length),
+              );
+              return (
+                <tr key={b.range} className="border-t border-white/5">
+                  <td className="py-1.5 text-white/75">{b.range}</td>
+                  <td
+                    className="text-right py-1.5 font-bold"
+                    style={{ color: residualColor(b.meanResidual) }}
+                  >
+                    {b.meanResidual >= 0 ? "+" : ""}
+                    {(b.meanResidual * 100).toFixed(2)}%
+                  </td>
+                  <td className="text-right py-1.5 text-white/55">
+                    {(b.stdResidual * 100).toFixed(2)}%
+                  </td>
+                  <td className="text-right py-1.5 text-white/45">{avgN.toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Walk-forward drift chart — shows how the calibration's bias evolves
+// across months as the training set grows. Pure SVG, no chart library.
+// ════════════════════════════════════════════════════════════════════
+
+function WalkForwardSection({ wf }: { wf: WalkForwardData }) {
+  const months = wf.months;
+  // Auto-zoom Y range with 25% headroom; floor at ±1% so a near-perfect run
+  // doesn't show as a flat line at the top.
+  const dataMaxAbs = Math.max(...months.map((m) => Math.abs(m.residual)));
+  const yMax = Math.max(0.01, Math.ceil(dataMaxAbs * 125) / 100);
+  const maxTrainSize = Math.max(...months.map((m) => m.trainSize));
+
+  // Layout — two stacked panels, generous spacing.
+  const W = 880;
+  const padL = 64;
+  const padR = 24;
+  const padT = 28;
+  const residualH = 220; // upper panel
+  const gap = 18;
+  const barsH = 96; // lower panel
+  const xLabelH = 36;
+  const H = padT + residualH + gap + barsH + xLabelH;
+
+  const plotW = W - padL - padR;
+  const xFor = (i: number) =>
+    padL + (months.length === 1 ? plotW / 2 : (i / (months.length - 1)) * plotW);
+
+  // Residual panel (centered on zero)
+  const residualTop = padT;
+  const residualMid = residualTop + residualH / 2;
+  const yResidualFor = (residual: number) =>
+    residualMid - (residual / yMax) * (residualH / 2 - 14);
+
+  // Bars panel
+  const barsTop = padT + residualH + gap;
+  const barsBaseline = barsTop + barsH - 18;
+  const barsCeiling = barsTop + 6;
+  const barH = (size: number) =>
+    (size / maxTrainSize) * (barsBaseline - barsCeiling);
+
+  // Build line + filled area
+  const linePoints = months.map((m, i) => `${xFor(i).toFixed(1)},${yResidualFor(m.residual).toFixed(1)}`);
+  const linePath = `M ${linePoints.join(" L ")}`;
+  const zeroY = yResidualFor(0);
+  const areaPath = `M ${xFor(0).toFixed(1)},${zeroY} L ${linePoints.join(" L ")} L ${xFor(months.length - 1).toFixed(1)},${zeroY} Z`;
+
+  // Y ticks: -yMax, -yMax/2, 0, yMax/2, yMax
+  const yTicks = [yMax, yMax / 2, 0, -yMax / 2, -yMax];
+  const monthLabel = (ym: string) => {
+    const [, mm] = ym.split("-");
+    return ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][
+      parseInt(mm, 10)
+    ];
+  };
+  const yearShort = (ym: string) => `'${ym.slice(2, 4)}`;
+
+  return (
+    <div className="mt-6 rounded-2xl border border-[#00F5D4]/30 bg-gradient-to-br from-[#00F5D4]/[0.07] to-transparent p-5">
+      {/* Header */}
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
+        <div className="flex-1 min-w-[260px]">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#00F5D4]/80 font-bold mb-1">
+            Walk-forward drift
+          </div>
+          <h3 className="text-white text-xl font-[family-name:var(--font-heading)] font-black leading-tight">
+            Calibration residual as data accumulates
+          </h3>
+          <p className="text-white/55 text-xs mt-1.5 max-w-xl leading-relaxed">
+            Each month, the calibrator is retrained on every prior month, then evaluated on
+            that month&apos;s picks. The lower bars show the training-set size — drift shrinks
+            as the dataset grows.
+          </p>
+        </div>
+        <div className="rounded-xl bg-[#0D0D1A]/70 border border-white/10 px-4 py-3 text-right">
+          <div className="text-[10px] uppercase tracking-widest text-white/45 font-bold">
+            Mean |residual|
+          </div>
+          <div
+            className="font-mono text-3xl font-black tabular-nums leading-none mt-1"
+            style={{ color: residualColor(wf.meanAbsResidual) }}
+          >
+            {(wf.meanAbsResidual * 100).toFixed(2)}%
+          </div>
+          <div className="text-[10px] text-white/45 mt-1">
+            across {months.length} months
+          </div>
+        </div>
+      </div>
+
+      {/* Chart */}
+      <div className="rounded-xl bg-[#0D0D1A] border border-white/10 p-3">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full h-auto"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="Walk-forward residual line above training-set-size bars, per month"
+        >
+          <defs>
+            <linearGradient id="wfAreaPos" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#FF3AF2" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#FF3AF2" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="wfBar" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#00F5D4" stopOpacity="0.85" />
+              <stop offset="100%" stopColor="#00F5D4" stopOpacity="0.25" />
+            </linearGradient>
+          </defs>
+
+          {/* ── Panel A: Residual ─────────────────────────────────── */}
+          {/* Panel label */}
+          <text
+            x={padL}
+            y={padT - 10}
+            fill="rgba(255,255,255,0.5)"
+            fontSize="10"
+            fontFamily="monospace"
+            fontWeight="700"
+            letterSpacing="0.12em"
+          >
+            RESIDUAL  (actual − predicted, post-calibration)
+          </text>
+
+          {/* Y gridlines + labels */}
+          {yTicks.map((t) => {
+            const y = yResidualFor(t);
+            const isZero = Math.abs(t) < 1e-9;
+            return (
+              <g key={`yt-${t}`}>
+                <line
+                  x1={padL}
+                  x2={W - padR}
+                  y1={y}
+                  y2={y}
+                  stroke={isZero ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.07)"}
+                  strokeDasharray={isZero ? "0" : "2 4"}
+                  strokeWidth={isZero ? 1.25 : 1}
+                />
+                <text
+                  x={padL - 10}
+                  y={y + 3.5}
+                  textAnchor="end"
+                  fill={isZero ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.4)"}
+                  fontSize="10"
+                  fontFamily="monospace"
+                >
+                  {isZero ? "0" : `${t > 0 ? "+" : ""}${(t * 100).toFixed(1)}%`}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Area fill */}
+          <path d={areaPath} fill="url(#wfAreaPos)" />
+
+          {/* Residual line */}
+          <path
+            d={linePath}
+            fill="none"
+            stroke="#FF3AF2"
+            strokeWidth={2.25}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+
+          {/* Data points + value labels (alternating above/below to dodge the line) */}
+          {months.map((m, i) => {
+            const x = xFor(i);
+            const y = yResidualFor(m.residual);
+            const labelAbove = m.residual >= 0;
+            const labelY = labelAbove ? y - 12 : y + 18;
+            return (
+              <g key={`pt-${m.month}`}>
+                <circle cx={x} cy={y} r={6} fill="#0D0D1A" stroke={residualColor(m.residual)} strokeWidth={2.5} />
+                <circle cx={x} cy={y} r={2.5} fill={residualColor(m.residual)} />
+                <text
+                  x={x}
+                  y={labelY}
+                  textAnchor="middle"
+                  fill={residualColor(m.residual)}
+                  fontSize="11"
+                  fontFamily="monospace"
+                  fontWeight="700"
+                >
+                  {m.residual >= 0 ? "+" : ""}
+                  {(m.residual * 100).toFixed(1)}%
+                </text>
+              </g>
+            );
+          })}
+
+          {/* ── Panel B: Training-set bars ───────────────────────── */}
+          {/* Panel label */}
+          <text
+            x={padL}
+            y={barsTop - 6}
+            fill="rgba(255,255,255,0.5)"
+            fontSize="10"
+            fontFamily="monospace"
+            fontWeight="700"
+            letterSpacing="0.12em"
+          >
+            TRAINING SET SIZE  (cumulative pairs before this month)
+          </text>
+
+          {/* Baseline */}
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={barsBaseline}
+            y2={barsBaseline}
+            stroke="rgba(255,255,255,0.15)"
+            strokeWidth={1}
+          />
+
+          {/* Bars */}
+          {months.map((m, i) => {
+            const x = xFor(i);
+            const h = barH(m.trainSize);
+            const w = 22;
+            return (
+              <g key={`bar-${m.month}`}>
+                <rect
+                  x={x - w / 2}
+                  y={barsBaseline - h}
+                  width={w}
+                  height={h}
+                  rx={3}
+                  fill="url(#wfBar)"
+                />
+                <text
+                  x={x}
+                  y={barsBaseline - h - 4}
+                  textAnchor="middle"
+                  fill="rgba(0,245,212,0.85)"
+                  fontSize="9"
+                  fontFamily="monospace"
+                  fontWeight="700"
+                >
+                  {m.trainSize >= 1000
+                    ? `${(m.trainSize / 1000).toFixed(m.trainSize >= 100000 ? 0 : 1)}k`
+                    : m.trainSize.toString()}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* X-axis month labels (shared between panels) */}
+          {months.map((m, i) => {
+            const x = xFor(i);
+            const showYear = i === 0 || m.month.slice(0, 4) !== months[i - 1].month.slice(0, 4);
+            return (
+              <g key={`xlabel-${m.month}`}>
+                <text
+                  x={x}
+                  y={barsBaseline + 16}
+                  textAnchor="middle"
+                  fill="rgba(255,255,255,0.65)"
+                  fontSize="11"
+                  fontFamily="monospace"
+                  fontWeight="600"
+                >
+                  {monthLabel(m.month)}
+                </text>
+                {showYear && (
+                  <text
+                    x={x}
+                    y={barsBaseline + 30}
+                    textAnchor="middle"
+                    fill="rgba(255,255,255,0.4)"
+                    fontSize="9.5"
+                    fontFamily="monospace"
+                  >
+                    {yearShort(m.month)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Legend / context strip */}
+      <div className="mt-3 flex flex-wrap items-center gap-4 text-[11px]">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-3 h-[2px] rounded"
+            style={{ backgroundColor: "#FF3AF2" }}
+            aria-hidden
+          />
+          <span className="text-white/65">Residual (Δ from zero)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-3 h-3 rounded-sm bg-[#00F5D4]/60"
+            aria-hidden
+          />
+          <span className="text-white/65">Training pairs (max {(maxTrainSize / 1000).toFixed(0)}k)</span>
+        </div>
+        <div className="ml-auto flex items-center gap-3 text-white/45">
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-[#4ADE80]" /> &lt;2%
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-[#FFE600]" /> 2–5%
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-[#F87171]" /> ≥5%
+          </span>
+        </div>
+      </div>
+
+      {/* Per-month table for accessibility / detail */}
+      <details className="mt-2">
+        <summary className="text-[10px] uppercase tracking-widest text-white/45 font-bold cursor-pointer hover:text-white/65">
+          Per-month detail
+        </summary>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full text-xs font-mono">
+            <thead className="text-white/45 text-[10px] uppercase tracking-widest font-bold">
+              <tr>
+                <th className="text-left py-1.5">Month</th>
+                <th className="text-right py-1.5">Train size</th>
+                <th className="text-right py-1.5">Eval size</th>
+                <th className="text-right py-1.5">Predicted</th>
+                <th className="text-right py-1.5">Actual</th>
+                <th className="text-right py-1.5">Residual</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((m) => (
+                <tr key={m.month} className="border-t border-white/5">
+                  <td className="py-1.5 text-white/75">{m.month}</td>
+                  <td className="text-right py-1.5 text-white/55">
+                    {m.trainSize.toLocaleString()}
+                  </td>
+                  <td className="text-right py-1.5 text-white/55">
+                    {m.evalSize.toLocaleString()}
+                  </td>
+                  <td className="text-right py-1.5 text-white/75">
+                    {(m.meanPredicted * 100).toFixed(1)}%
+                  </td>
+                  <td className="text-right py-1.5 text-white/75">
+                    {(m.actualHitRate * 100).toFixed(1)}%
+                  </td>
+                  <td
+                    className="text-right py-1.5 font-bold"
+                    style={{ color: residualColor(m.residual) }}
+                  >
+                    {m.residual >= 0 ? "+" : ""}
+                    {(m.residual * 100).toFixed(2)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  );
 }
 

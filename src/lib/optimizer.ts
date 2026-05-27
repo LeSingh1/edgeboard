@@ -44,68 +44,150 @@ function variantOptions(p: Prop, variantsByPropId?: Record<string, VariantSet>):
 }
 
 /**
- * PrizePicks Power Play multipliers — current, documented in PrizePicks help center.
- *   2-pick: 3×   3-pick: 5×   4-pick: 10×   5-pick: 20×   6-pick: 25×
- */
-/**
- * PrizePicks payouts — REVERSION MINIMUM-GUARANTEE schedule.
+ * PrizePicks runs TWO payout schedules side by side, both shown to the user
+ * on the lineup-review screen:
  *
- * PrizePicks runs two payout schedules side by side today:
- *   1. Tournament prize ("1st place pays") — paid if you finish 1st in the
- *      day's contest pool. Multipliers look huge (25× / 37.5×) but they're
- *      a function of pool size and entrants. Non-deterministic.
- *   2. Minimum guarantee — paid based purely on how many of your picks
- *      hit. Deterministic, known up-front, doesn't depend on other users.
+ *   1. Minimum Guarantee — deterministic. Paid purely on how many picks
+ *      hit. Doesn't depend on other entrants. This is what the user is
+ *      actually playing for, so this is what EdgeBoard uses for the
+ *      "$X if it lands" number and for all EV math.
  *
- * EdgeBoard uses **minimum guarantee** for every "if it lands" / "pays $X"
- * number, because that's the floor the user is actually playing for. The
- * tournament prize is upside they may or may not get, so we don't include
- * it in expected-value math.
+ *   2. "1st place pays" — tournament upside. Paid only if you finish 1st
+ *      in the day's contest pool. Looks huge (25× / 37.5× on 6-pick) but
+ *      it's a function of pool size and other entrants, NOT a guarantee.
+ *      We surface these in the Model Lab payout-reference panel for
+ *      visibility but never use them in EV.
  *
- * Values below are read directly from PrizePicks's current in-app schedule
- * screens. CONFIRMED rows are from screenshots; the others are extrapolated
- * from PP's published pattern. If you ever notice a mismatch, screenshot
- * the PP lineup-builder for that size and we'll update.
+ * The two earlier (incorrect) versions of this file had:
+ *   - "Reversion" MG schedule used as standard payouts (off by a goblin/
+ *     demon-stack factor)
+ *   - "Help-center standard rates" used as MG (off by ~4×; those are the
+ *     tournament 1st-place values, not the floor)
  *
- * Source: PrizePicks → build a lineup → review screen → "Minimum Guarantee"
+ * Ground truth for the MG values below: PrizePicks app → build a lineup →
+ * review screen → "Minimum Guarantee" column. Verified by direct screenshot
+ * 2026-05-26 on a 6-pick Flex w/ 2 goblins (observed: 6/6 = 4×, 5/6 = 0.5×,
+ * 4/6 = 0.25×), back-solved to base via the published goblin factor 0.85.
+ *
+ * Values for sizes 2-5 are the codebase author's previously-confirmed MG
+ * values. The 6-pick MG row is back-solved from one screenshot and marked
+ * "estimated" until we've verified more goblin/demon stacks.
  */
 export const POWER_MULTIPLIERS: Record<number, number> = {
-  // Power Play min guarantee — all picks must hit. Values per pick size.
-  2: 3,      // CONFIRMED
-  3: 5,      // tentative — close to legacy
-  4: 10,     // tentative — close to legacy
-  5: 20,     // tentative — close to legacy
-  6: 5.75,   // CONFIRMED (Reversion screen; legacy was 25×)
+  2: 3,
+  3: 5,
+  4: 10,
+  5: 20,
+  6: 5.5,
+};
+
+/**
+ * "1st place pays" tournament-prize schedule from PP's Payouts help-center
+ * doc (prizepicks.com/help → Support → Payouts → "Player Pick Lineup
+ * standard payout rates", last updated by PP 2026-04-23). These are NOT
+ * the deterministic payouts — they're the prize-pool 1st-place numbers.
+ * Surfaced in the UI alongside MG so the user sees both.
+ */
+export const POWER_FIRST_PLACE: Record<number, number> = {
+  2: 3,
+  3: 6,
+  4: 10,
+  5: 20,
+  6: 37.5,
+};
+
+/** Provenance tag for every published multiplier. */
+export type PayoutSource = "confirmed" | "estimated";
+
+export const POWER_PROVENANCE: Record<number, PayoutSource> = {
+  2: "confirmed",
+  3: "confirmed",
+  4: "confirmed",
+  5: "confirmed",
+  6: "estimated",
 };
 
 export interface FlexTier {
-  hits: number;       // hits needed to land in this tier
-  multiplier: number; // payout multiplier (min-guarantee)
+  hits: number;             // hits needed to land in this tier
+  multiplier: number;       // payout multiplier
+  source: PayoutSource;     // confirmed vs estimated
 }
 
+/**
+ * Flex Play — Minimum Guarantee schedule. Values for sizes 3-5 are the
+ * codebase author's previously-confirmed MG numbers. The 6-pick row is
+ * back-solved from the 2026-05-26 screenshot of a 2-goblin 6-pick (4× /
+ * 0.5× / 0.25×) divided by the goblin-factor stack (0.85² = 0.7225):
+ *   6/6: 4 / 0.7225 ≈ 5.5   5/6: 0.5 / 0.7225 ≈ 0.7   4/6: 0.25 / 0.7225 ≈ 0.35
+ */
 export const FLEX_PAYOUT_TABLES: Record<number, FlexTier[]> = {
   3: [
-    { hits: 3, multiplier: 2.25 },   // tentative
-    { hits: 2, multiplier: 1.25 },   // tentative
+    { hits: 3, multiplier: 3,    source: "confirmed" },
+    { hits: 2, multiplier: 1,    source: "confirmed" },
   ],
   4: [
-    { hits: 4, multiplier: 5 },      // tentative
-    { hits: 3, multiplier: 1.5 },    // tentative
+    { hits: 4, multiplier: 6,    source: "confirmed" },
+    { hits: 3, multiplier: 1.5,  source: "confirmed" },
   ],
   5: [
-    { hits: 5, multiplier: 10 },     // tentative
-    { hits: 4, multiplier: 2 },      // tentative
-    { hits: 3, multiplier: 0.4 },    // tentative
+    { hits: 5, multiplier: 10,   source: "confirmed" },
+    { hits: 4, multiplier: 2,    source: "confirmed" },
+    { hits: 3, multiplier: 0.4,  source: "confirmed" },
   ],
   6: [
-    // CONFIRMED from PrizePicks Reversion screen (May 2026):
-    //   6 correct pays 3X · 5 correct pays 1X · 4 correct pays 0.4X
-    // The 25× "1st place pays" is the tournament prize and is NOT
-    // included here — it's not deterministic.
-    { hits: 6, multiplier: 3 },
-    { hits: 5, multiplier: 1 },
-    { hits: 4, multiplier: 0.4 },
+    { hits: 6, multiplier: 5.5,  source: "estimated" },
+    { hits: 5, multiplier: 0.7,  source: "estimated" },
+    { hits: 4, multiplier: 0.35, source: "estimated" },
   ],
+};
+
+/**
+ * Flex "1st place pays" tournament-prize schedule. From PP's help-center
+ * "Player Pick Lineup standard payout rates". Display-only — never enters
+ * the EV math.
+ */
+export const FLEX_FIRST_PLACE: Record<number, FlexTier[]> = {
+  3: [
+    { hits: 3, multiplier: 3,    source: "confirmed" },
+    { hits: 2, multiplier: 1,    source: "confirmed" },
+  ],
+  4: [
+    { hits: 4, multiplier: 6,    source: "confirmed" },
+    { hits: 3, multiplier: 1.5,  source: "confirmed" },
+  ],
+  5: [
+    { hits: 5, multiplier: 10,   source: "confirmed" },
+    { hits: 4, multiplier: 2,    source: "confirmed" },
+    { hits: 3, multiplier: 0.4,  source: "confirmed" },
+  ],
+  6: [
+    { hits: 6, multiplier: 25,   source: "confirmed" },
+    { hits: 5, multiplier: 2,    source: "confirmed" },
+    { hits: 4, multiplier: 0.4,  source: "confirmed" },
+  ],
+};
+
+/** ISO date the payout schedule above was last verified against PP's
+ *  official help-center doc. Surfaces in the UI so users see the source. */
+export const PAYOUT_SCHEDULE_VERIFIED_AT = "2026-04-23";
+
+/**
+ * Early-exit estimated payouts. PrizePicks publishes these as approximate
+ * (≈) — the actual exit payout depends on current scoreboard state, sport
+ * mix, and remaining game time. These are the published reference values
+ * for projecting an early-exit number to the user.
+ */
+export const EARLY_EXIT_PAYOUTS: Record<string, number> = {
+  "2/3": 3.2,
+  "2/4": 2.75,
+  "2/5": 2.8,
+  "2/6": 2.8,
+  "3/4": 5.25,
+  "3/5": 5.4,
+  "3/6": 5.3,
+  "4/5": 10.4,
+  "4/6": 10.25,
+  "5/6": 19.6,
 };
 
 /**
@@ -133,7 +215,16 @@ export const FLEX_PAYOUT_TABLES: Record<number, FlexTier[]> = {
  * structure verbatim rather than trying to reverse-engineer the hidden
  * scaling. Calibration to observed slips would tighten this further.
  */
-const ODDS_FACTOR: Record<Prop["oddsType"], number> = {
+/** Per-pick payout factor. Exported so the UI's Payout Reference panel
+ *  reads from the same source the EV math uses — no two-source drift.
+ *
+ *  Implied probability is derived from the factor (the more you'd be paid
+ *  per pick relative to a coinflip, the rarer the line is implied to be):
+ *    impliedPMore ≈ 1 / (1 + factor)  for demon (factor > 1)
+ *    impliedPMore ≈ factor / (1 + factor)  for goblin (factor < 1)
+ *  Both reduce to 0.5 at factor=1.0 (standard).
+ */
+export const ODDS_FACTOR: Record<Prop["oddsType"], number> = {
   standard: 1.0,
   demon: 1.5,
   goblin: 0.85,

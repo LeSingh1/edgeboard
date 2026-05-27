@@ -102,17 +102,27 @@ interface BoxScorePlayer {
   espnId: number;
 }
 
-/** Pull a team's full 2025-26 schedule and return every game's eventId. */
+/** Pull a team's full 2025-26 schedule (regular season + postseason) and
+ *  return every game's eventId. ESPN's schedule endpoint requires explicit
+ *  `seasontype` (2 = regular, 3 = postseason); without it the response
+ *  defaults to the *current* segment only, which excludes the regular
+ *  season once playoffs begin. */
 async function fetchTeamSchedule(teamAbbr: string): Promise<string[]> {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamAbbr}/schedule?season=2026`;
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
-    if (!res.ok) return [];
-    const body = (await res.json()) as { events?: Array<{ id?: string }> };
-    return (body.events ?? []).map((e) => e.id).filter((id): id is string => !!id);
-  } catch {
-    return [];
+  const ids = new Set<string>();
+  for (const seasontype of [2, 3]) {
+    const url =
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/` +
+      `${teamAbbr}/schedule?season=2026&seasontype=${seasontype}`;
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      if (!res.ok) continue;
+      const body = (await res.json()) as { events?: Array<{ id?: string }> };
+      for (const e of body.events ?? []) if (e.id) ids.add(e.id);
+    } catch {
+      // ignore per-segment failures — partial coverage is fine
+    }
   }
+  return [...ids];
 }
 
 /** Extract every athlete who appeared in a single game's box score. */

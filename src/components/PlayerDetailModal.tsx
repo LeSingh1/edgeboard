@@ -88,11 +88,18 @@ export function PlayerDetailModal({
   // gamelog yet) we fall back to an empty chart with an "awaiting gamelog"
   // hint so the modal still opens informatively.
   const recent = projection && projection.available ? projection.recent : [];
+  const recentMeta =
+    projection && projection.available && projection.recentMeta
+      ? projection.recentMeta
+      : [];
   const projectionMean =
     projection && projection.available ? projection.projection : prop.line;
   // Last 5 games, chronological left→right so the most recent reads on the
   // right (the convention PrizePicks uses).
   const last5 = recent.slice(-5);
+  // Align the per-game metadata with the last-5 slice. recentMeta is 1:1
+  // with `recent`, so we take the same tail.
+  const last5Meta = recentMeta.slice(-5);
   const last5Avg =
     last5.length > 0 ? last5.reduce((a, b) => a + b, 0) / last5.length : 0;
 
@@ -434,10 +441,19 @@ export function PlayerDetailModal({
                       <div className="divide-y divide-white/5">
                         {[...last5].reverse().map((value, i) => {
                           const hits = value >= prop.line;
-                          // We don't have per-game date/opponent in
-                          // ProjectionResult.recent — show a synthetic
-                          // "Game N" label (Game 1 = most recent).
-                          const idx = last5.length - i;
+                          // Last5 is oldest→newest, so reversed gives
+                          // newest at the top. last5Meta is also oldest→newest.
+                          const reverseIdx = last5.length - 1 - i;
+                          const meta = last5Meta[reverseIdx];
+                          const dayLabel = meta?.date
+                            ? new Date(meta.date).toLocaleDateString(undefined, {
+                                month: "short",
+                                day: "numeric",
+                              })
+                            : `Game ${last5.length - i}`;
+                          const oppText = meta?.opponent
+                            ? `${meta.atVs === "@" ? "@" : meta.atVs === "vs" ? "vs" : ""} ${meta.opponent}`.trim()
+                            : "—";
                           return (
                             <motion.div
                               key={i}
@@ -448,13 +464,13 @@ export function PlayerDetailModal({
                               className="grid grid-cols-[1fr_1fr_auto] gap-4 items-center py-3"
                             >
                               <span className="text-white/85 text-sm font-bold uppercase tracking-wider">
-                                Game {idx}
+                                {dayLabel}
                                 {i === 0 && (
                                   <span className="ml-1.5 text-[9px] text-[#FFE600]">(latest)</span>
                                 )}
                               </span>
                               <span className="text-white/55 text-sm font-bold uppercase tracking-wider">
-                                {opponentLabel || "—"}
+                                {oppText}
                               </span>
                               <span
                                 className={cn(
