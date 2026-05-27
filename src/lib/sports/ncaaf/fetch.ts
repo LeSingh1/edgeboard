@@ -3,11 +3,40 @@ import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-// AP top-25 + a few additional powerhouses. ESPN team slugs (lowercase).
+// AP top-25 + a few additional powerhouses. ESPN team numeric IDs (slugs
+// like "ohio-st", "fla-st", "kansas-st", "nc-st", "virg-tech", "tex-am",
+// "mizzou", "ind" all 400 on the schedule endpoint — IDs are stable).
 const NCAAF_TEAMS = [
-  "georgia","texas","ohio-st","alabama","oregon","mich","penn-st","tex-am","mizzou","ole-miss",
-  "tenn","fla-st","clemson","lsu","oklahoma","notre-dame","utah","usc","washington","wisconsin",
-  "iowa","ind","kansas-st","nc-st","virg-tech","auburn","memphis","kentucky","baylor","tcu",
+  "61",   // Georgia
+  "251",  // Texas
+  "194",  // Ohio State
+  "333",  // Alabama
+  "2483", // Oregon
+  "130",  // Michigan
+  "213",  // Penn State
+  "245",  // Texas A&M
+  "142",  // Missouri
+  "145",  // Ole Miss
+  "2633", // Tennessee
+  "52",   // Florida State
+  "228",  // Clemson
+  "99",   // LSU
+  "201",  // Oklahoma
+  "87",   // Notre Dame
+  "254",  // Utah
+  "30",   // USC
+  "264",  // Washington
+  "275",  // Wisconsin
+  "2294", // Iowa
+  "84",   // Indiana
+  "2306", // Kansas State
+  "152",  // NC State
+  "259",  // Virginia Tech
+  "2",    // Auburn
+  "235",  // Memphis
+  "96",   // Kentucky
+  "239",  // Baylor
+  "2628", // TCU
 ];
 
 export async function fetchTeamSchedule(teamAbbr: string, season: number): Promise<string[]> {
@@ -47,13 +76,18 @@ async function fetchBoxScorePlayers(eventId: string): Promise<PlayerRef[]> {
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
-  for (const team of NCAAF_TEAMS) {
-    const events = await fetchTeamSchedule(team, y);
-    for (const eventId of events.slice(0, 2)) {
-      for (const p of await fetchBoxScorePlayers(eventId)) {
-        if (!seen.has(p.id)) seen.set(p.id, p);
+  // Try current year first; if no usable boxscores (off-season), fall back to
+  // year-1. ESPN returns events for future seasons without populated boxscores.
+  for (const season of [y, y - 1]) {
+    for (const team of NCAAF_TEAMS) {
+      const events = await fetchTeamSchedule(team, season);
+      for (const eventId of events.slice(0, 2)) {
+        for (const p of await fetchBoxScorePlayers(eventId)) {
+          if (!seen.has(p.id)) seen.set(p.id, p);
+        }
       }
     }
+    if (seen.size > 50) break;  // got enough — stop walking back
   }
   return [...seen.values()];
 }
