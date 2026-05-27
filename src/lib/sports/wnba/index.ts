@@ -1,0 +1,30 @@
+import type { SportAdapter } from "@/lib/sports/types";
+import { nbaExtractStat } from "@/lib/sports/nba/extract";
+import { fetchPlayerRoster, fetchPlayerGamelog, fetchTeamSchedule } from "./fetch";
+import type { Prop } from "@/lib/types";
+
+export function trainingSeasons(): number[] {
+  const y = new Date().getFullYear();
+  return [y - 1, y];   // WNBA: short 40-game season → pull two years
+}
+
+const SUPPORTED_STATS = [
+  "Points", "Rebounds", "Assists", "Steals", "Blocked Shots", "3PTM", "3PTA",
+  "FG Made", "FG Attempted", "FTM", "FTA", "Turnovers",
+  "PRA", "Pts+Rebs", "Pts+Asts", "Rebs+Asts", "Blks+Stls", "Fantasy Score",
+];
+
+export const wnbaAdapter: SportAdapter = {
+  leagues: ["WNBA", "WNBA1Q", "WNBA1H"],
+  displayName: "WNBA",
+  trainingSeasons,
+  supportedStats: SUPPORTED_STATS,
+  fetchPlayerRoster,
+  fetchPlayerGamelog,
+  fetchTeamSchedule,
+  extractStat: nbaExtractStat,
+  project: async (prop: Prop) => {
+    const { nbaProjection } = await import("@/lib/realProjections");
+    return nbaProjection(prop);
+  },
+};
