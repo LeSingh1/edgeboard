@@ -136,6 +136,9 @@ export default function SettingsPage() {
         {/* Backtest calibration */}
         <CalibrationToggleCard />
 
+        {/* Training health */}
+        <TrainingHealthPanel />
+
         {/* Bankroll */}
         <SettingCard accent="#FFE600" accent2="#7B2FFF">
           <SettingHeader icon={Trophy} title="Bankroll" accent="#FFE600" />
@@ -450,6 +453,46 @@ function CalibrationToggleCard() {
         <code className="text-[#FFE600]">DISABLE_CALIBRATION=1</code>.
       </p>
     </SettingCard>
+  );
+}
+
+interface TrainingStatusResp {
+  currentlyRunning: boolean;
+  perSport: Record<string, {
+    lastRunAt: string | null;
+    ageHours: number | null;
+    freshness: "fresh" | "stale" | "missing";
+  }>;
+}
+
+function TrainingHealthPanel() {
+  const [data, setData] = useState<TrainingStatusResp | null>(null);
+  useEffect(() => {
+    const load = () => fetch("/api/training-status").then(r => r.json()).then(setData).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+  if (!data) return null;
+  return (
+    <div className="mt-6 p-4 rounded-2xl border-4 border-dashed border-[#00F5D4]">
+      <h3 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-sm mb-3">
+        Training health{" "}
+        {data.currentlyRunning && <span className="text-[#FFE600]">· running now</span>}
+      </h3>
+      <ul className="space-y-1 text-sm">
+        {Object.entries(data.perSport).map(([sport, s]) => {
+          const dot = s.freshness === "fresh" ? "🟢" : s.freshness === "stale" ? "🟡" : "🔴";
+          const age = s.ageHours == null ? "never trained" : `${s.ageHours.toFixed(1)}h ago`;
+          return (
+            <li key={sport} className="flex justify-between">
+              <span>{dot} {sport}</span>
+              <span className="text-white/60">{age}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
