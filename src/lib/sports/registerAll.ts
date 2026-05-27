@@ -19,3 +19,5 @@ import { aflAdapter } from "./afl";
 registerAdapter(aflAdapter);
 import { ncaamAdapter } from "./ncaam";
 registerAdapter(ncaamAdapter);
+import { ncaafAdapter } from "./ncaaf";
+registerAdapter(ncaafAdapter);
