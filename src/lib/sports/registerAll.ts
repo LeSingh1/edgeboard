@@ -17,3 +17,5 @@ import { pgaAdapter } from "./pga";
 registerAdapter(pgaAdapter);
 import { aflAdapter } from "./afl";
 registerAdapter(aflAdapter);
+import { ncaamAdapter } from "./ncaam";
+registerAdapter(ncaamAdapter);
