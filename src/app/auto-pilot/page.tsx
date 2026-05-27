@@ -27,7 +27,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { PlayerDetailModal } from "@/components/PlayerDetailModal";
-import { CustomLeaderboard } from "@/components/CustomLeaderboard";
+import { AutoPilotChat } from "@/components/AutoPilotChat";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { LeagueSummary, PickSide, Prop } from "@/lib/types";
 
@@ -262,7 +262,7 @@ export default function AutoPilotPage() {
           </div>
         </div>
         <div className="mt-8">
-          <CustomLeaderboard />
+          <AutoPilotChat board={board} />
         </div>
       </div>
     );
@@ -696,11 +696,12 @@ export default function AutoPilotPage() {
         );
       })()}
 
-      {/* Custom Leaderboard — paste your own picks, score them through the
-          model, get a sorted edge ranking. Standalone from the auto-pilot
-          flow above; lets users bring their own arrays of picks. */}
+      {/* Budget chat — user types a budget + intent in plain English, the
+          chat parses it and runs the optimizer at a few entry sizes to
+          propose a concrete spend plan. Standalone from the auto-pilot
+          flow above; complements rather than replaces it. */}
       <div className="mt-12">
-        <CustomLeaderboard />
+        <AutoPilotChat board={board} />
       </div>
     </div>
   );
