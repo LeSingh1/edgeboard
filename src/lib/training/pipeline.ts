@@ -1,0 +1,75 @@
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { allAdapters } from "@/lib/sports/registry";
+import { runSport, type RunSportResult } from "./runSport";
+import { notify } from "./watchdog";
+
+export interface PipelineSummary {
+  startedAt: string;
+  finishedAt: string;
+  totalMs: number;
+  okCount: number;
+  failedCount: number;
+  results: RunSportResult[];
+}
+
+interface PipelineOpts {
+  rootDir: string;
+  minBucketSize: number;
+  maxConcurrent: number;
+}
+
+/** Run an async fn over items with a concurrency cap. Preserves input order in results. */
+async function pmap<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>): Promise<U[]> {
+  const out: U[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+export async function runPipeline(opts: PipelineOpts): Promise<PipelineSummary> {
+  const adapters = allAdapters();
+  const startedAt = new Date().toISOString();
+  const t0 = Date.now();
+
+  const results = await pmap(adapters, opts.maxConcurrent, (a) =>
+    runSport(a, { rootDir: opts.rootDir, minBucketSize: opts.minBucketSize }),
+  );
+
+  const okCount = results.filter((r) => r.status === "ok").length;
+  const failedCount = results.length - okCount;
+  const summary: PipelineSummary = {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    totalMs: Date.now() - t0,
+    okCount,
+    failedCount,
+    results,
+  };
+
+  // Persist last-trained timestamps (keyed by sport for /api/training-status)
+  const metaDir = join(opts.rootDir, "meta");
+  await mkdir(metaDir, { recursive: true });
+  await writeFile(join(metaDir, "lastTrainedAt.json"), JSON.stringify(
+    Object.fromEntries(results.filter(r => r.status === "ok").map(r => [r.sport, summary.finishedAt])),
+    null, 2,
+  ));
+  // Notification
+  const mins = (summary.totalMs / 60000).toFixed(1);
+  if (failedCount === 0) {
+    notify(`Trained ${okCount} sports in ${mins} min`, "Nightly training complete");
+  } else if (okCount === 0) {
+    notify(`Training FAILED — 0 sports trained`, "Nightly training failed");
+  } else {
+    const failed = results.filter(r => r.status === "failed").map(r => r.sport).join(", ");
+    notify(`Partial: ${okCount} ok, failed: ${failed}`, `Nightly training (${mins} min)`);
+  }
+  return summary;
+}
