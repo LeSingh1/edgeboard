@@ -57,6 +57,8 @@ interface Message {
   text: string;
   /** Optional plan attached to an assistant message. */
   plans?: PlanOption[];
+  /** Label of the plan that should render in expanded form by default. */
+  recommendedLabel?: string;
 }
 
 const INITIAL_GREETING: Message = {
@@ -391,7 +393,11 @@ function MessageBubble({ message }: { message: Message }) {
         {message.plans && message.plans.length > 0 && (
           <div className="mt-3 grid gap-2.5">
             {message.plans.map((p) => (
-              <PlanCard key={p.label} plan={p} />
+              <PlanCard
+                key={p.label}
+                plan={p}
+                defaultExpanded={p.label === message.recommendedLabel}
+              />
             ))}
           </div>
         )}
@@ -400,8 +406,8 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-function PlanCard({ plan }: { plan: PlanOption }) {
-  const [expanded, setExpanded] = useState(false);
+function PlanCard({ plan, defaultExpanded = false }: { plan: PlanOption; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const ev = plan.expectedReturn - plan.totalStake;
   const evPos = ev >= 0;
   return (
@@ -444,7 +450,11 @@ function PlanCard({ plan }: { plan: PlanOption }) {
           </div>
           <div className="space-y-1.5">
             {plan.lineups.map((l, i) => (
-              <details key={l.id ?? i} className="rounded-lg bg-white/[0.02] border border-white/5">
+              <details
+                key={l.id ?? i}
+                open
+                className="rounded-lg bg-white/[0.02] border border-white/5"
+              >
                 <summary className="px-2.5 py-1.5 cursor-pointer flex items-center justify-between text-xs text-white/80">
                   <span>
                     Lineup #{i + 1} · {l.picks.length}-pick {l.playType} · {(l.hitProbability * 100).toFixed(1)}% hit
@@ -455,12 +465,16 @@ function PlanCard({ plan }: { plan: PlanOption }) {
                 </summary>
                 <ul className="px-3 pb-2 space-y-0.5">
                   {l.picks.map((pp, j) => (
-                    <li key={j} className="text-[10px] text-white/55 flex items-center justify-between">
-                      <span>
-                        {pp.prop.playerName} {pp.prop.statType} {pp.side === "more" ? "Over" : "Under"} {pp.prop.line}
+                    <li key={j} className="text-[10px] text-white/55 flex items-center justify-between gap-2">
+                      <span className="truncate">
+                        <span className="text-white/80 font-medium">{pp.prop.playerName}</span>{" "}
+                        <span className="text-white/50">{pp.prop.statType}</span>{" "}
+                        <span className={pp.side === "more" ? "text-[#4ADE80]" : "text-[#FF6B35]"}>
+                          {pp.side === "more" ? "Over" : "Under"} {pp.prop.line}
+                        </span>
                       </span>
-                      <span className="font-mono text-white/40">
-                        {(pp.probability * 100).toFixed(1)}%
+                      <span className="font-mono text-white/40 shrink-0">
+                        {(pp.probability * 100).toFixed(0)}%
                       </span>
                     </li>
                   ))}
@@ -536,6 +550,7 @@ function respond(
     role: "assistant",
     text,
     plans,
+    recommendedLabel: rec.label,
   };
 }
 
