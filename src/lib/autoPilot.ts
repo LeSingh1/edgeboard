@@ -142,6 +142,164 @@ function selectDiverse(lineups: Lineup[], k: number, size: number): Lineup[] {
   return out;
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Natural-language request parser
+//
+// The chat input on /auto-pilot funnels free-text requests through
+// parseRequest(). It extracts whatever knobs were named — count, size,
+// entry, sport, risk mode — and leaves the rest undefined so the page
+// can fall back to Auto for them.
+//
+// We DON'T try to be a general LLM. We pattern-match the things
+// PrizePicks users actually say: "give me 3 lineups", "I have $20",
+// "safe play", "NBA only", "5-pick to win big". Anything we can't
+// match silently falls through to defaults, which gives the same
+// behavior as hitting Surprise Me.
+// ════════════════════════════════════════════════════════════════════
+
+export type RiskIntent = "safe" | "balanced" | "aggressive";
+
+export interface ParsedRequest {
+  count?: number;
+  size?: number;
+  entry?: number;
+  /** Sport league name, matched against `knownSports` case-insensitively. */
+  sport?: string;
+  /** Risk preference inferred from words like "safe", "easy", "risky". */
+  mode?: RiskIntent;
+  /** Phrases that should clear everything back to Auto. */
+  resetAll?: boolean;
+  /** Which fields we actually matched — drives the assistant's reply copy
+   *  ("Going with 3 slips · $5 · all sports") so it doesn't claim to have
+   *  understood things the user never said. */
+  matched: Array<"count" | "size" | "entry" | "sport" | "mode" | "resetAll">;
+}
+
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  a: 1, an: 1, single: 1, just: 1,
+};
+
+function wordToNumber(s: string): number | null {
+  const lower = s.toLowerCase();
+  if (lower in NUMBER_WORDS) return NUMBER_WORDS[lower];
+  const n = parseInt(lower, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function parseRequest(text: string, knownSports: string[] = []): ParsedRequest {
+  const lower = text.toLowerCase();
+  const out: ParsedRequest = { matched: [] };
+
+  // "surprise me" / "anything" / "auto" → reset everything
+  if (/\b(surprise me|anything works|whatever you want|just pick|all auto|auto pick)\b/i.test(text)) {
+    out.resetAll = true;
+    out.matched.push("resetAll");
+  }
+
+  // Risk intent — favor safer / bigger payouts based on language
+  if (/\b(safe|safer|easy|easily|guaranteed|sure thing|locks?|low risk|conservative)\b/i.test(text)) {
+    out.mode = "safe";
+    out.matched.push("mode");
+  } else if (/\b(aggressive|risky|high payout|big payout|long shot|moonshot|swing|big money)\b/i.test(text)) {
+    out.mode = "aggressive";
+    out.matched.push("mode");
+  } else if (/\b(balanced|middle|mix)\b/i.test(text)) {
+    out.mode = "balanced";
+    out.matched.push("mode");
+  }
+
+  // Number of lineups — "give me 3 lineups", "3 slips", "two plays", "best lineup"
+  const countWithUnit = lower.match(/\b(one|two|three|four|five|\d+)\s+(?:lineups?|slips?|plays?|parlays?|bets?)\b/);
+  const bestSingular = /\b(?:the\s+)?best\s+(?:lineup|slip|play|parlay|bet)\b/i.test(text);
+  const giveMeOne = lower.match(/\b(?:give me|build me|make me|get me|i want|gimme|show me)\s+(one|two|three|four|five|\d+)\b/);
+  if (countWithUnit) {
+    const v = wordToNumber(countWithUnit[1]);
+    if (v != null && v >= 1 && v <= 10) {
+      out.count = Math.min(5, v);
+      out.matched.push("count");
+    }
+  } else if (bestSingular) {
+    out.count = 1;
+    out.matched.push("count");
+  } else if (giveMeOne) {
+    const v = wordToNumber(giveMeOne[1]);
+    if (v != null && v >= 1 && v <= 5) {
+      out.count = v;
+      out.matched.push("count");
+    }
+  }
+
+  // Picks per lineup — "4-pick", "5 pick", "size 4", "with 6 picks"
+  const sizeMatch =
+    lower.match(/\b(2|3|4|5|6)[\s-]?pick\b/) ??
+    lower.match(/\bsize\s*(2|3|4|5|6)\b/) ??
+    lower.match(/\bwith\s+(2|3|4|5|6)\s+picks?\b/);
+  if (sizeMatch) {
+    out.size = parseInt(sizeMatch[1], 10);
+    out.matched.push("size");
+  }
+
+  // Entry cost — "$20", "I have 5", "for $50", "20 dollars", "ten bucks"
+  const dollarMatch = lower.match(/\$\s*(\d{1,4})\b/);
+  const haveMatch = lower.match(/\b(?:i have|with|for|spend|using|budget(?: of)?|got)\s+\$?\s*(\d{1,4})(?:\s*(?:dollars|bucks|dollar|buck))?\b/);
+  const wordsMatch = lower.match(/\b(\d{1,4})\s*(?:dollars|bucks|dollar|buck)\b/);
+  const entryRaw = dollarMatch?.[1] ?? haveMatch?.[1] ?? wordsMatch?.[1];
+  if (entryRaw) {
+    const v = parseInt(entryRaw, 10);
+    if (v >= 1 && v <= 1000) {
+      out.entry = v;
+      out.matched.push("entry");
+    }
+  }
+
+  // Sport — try every league name from the live board against the text.
+  // Word boundary on both sides so "MLS" doesn't match "MLSports" or whatever.
+  if (/\b(all\s+sports|every\s+sport|any\s+sport|across\s+all)\b/i.test(text)) {
+    // Explicit "across all sports" → leave sport undefined so it falls back
+    // to ALL/auto on the page. No matched entry — defaults handle it.
+  } else {
+    for (const s of knownSports) {
+      if (!s || s === "ALL") continue;
+      const re = new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      if (re.test(text)) {
+        out.sport = s;
+        out.matched.push("sport");
+        break;
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Letter grade for the top lineup, based purely on its hit probability.
+ * The /auto-pilot chat shows this next to the assistant's reply so the
+ * user has a one-glance read on "how confident is this pick really?".
+ *
+ *   A → ≥ 40% chance      (rare with PrizePicks-implied odds)
+ *   B → ≥ 25%
+ *   C → ≥ 15%
+ *   D → ≥ 8%
+ *   F → < 8%
+ */
+export function gradeLineup(hitProbability: number): "A" | "B" | "C" | "D" | "F" {
+  if (hitProbability >= 0.40) return "A";
+  if (hitProbability >= 0.25) return "B";
+  if (hitProbability >= 0.15) return "C";
+  if (hitProbability >= 0.08) return "D";
+  return "F";
+}
+
+export const GRADE_COLOR: Record<ReturnType<typeof gradeLineup>, string> = {
+  A: "#4ADE80",
+  B: "#A3E635",
+  C: "#FFE600",
+  D: "#FF6B35",
+  F: "#F87171",
+};
+
 /**
  * Sweep lineup sizes 2..6 with a small pool and pick the one whose top
  * lineup has the highest expected dollars ($-payout × hit-prob). Used by

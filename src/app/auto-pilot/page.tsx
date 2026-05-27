@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Sparkles,
@@ -16,14 +16,103 @@ import {
   Loader2,
   AlertTriangle,
   Wand2,
+  MessageCircle,
+  Send,
 } from "lucide-react";
-import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
+import {
+  buildAutoLineups,
+  pickAutoSize,
+  parseRequest,
+  gradeLineup,
+  GRADE_COLOR,
+  type AutoPilotResult,
+  type ParsedRequest,
+} from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { LeagueSummary, Prop } from "@/lib/types";
+
+/**
+ * Chat thread shape. Assistant turns optionally carry the lineup that was
+ * built for them so the bubble can show a compact result preview + grade.
+ */
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  /** Compact lineup summary, only set on assistant replies that produced one. */
+  preview?: {
+    lineupId: string;
+    hitProb: number;
+    grade: "A" | "B" | "C" | "D" | "F";
+    grossPayout: number;
+    expectedValue: number;
+    size: number;
+    playType: "power" | "flex";
+    entry: number;
+    count: number;
+    picks: { player: string; statType: string; line: number; side: "more" | "less" }[];
+  };
+}
+
+/**
+ * Build a chat reply that summarizes what we understood + grades the top
+ * lineup. The phrasing is intentionally simple — same shape every time so
+ * it reads like a quick assistant response rather than a wall of text.
+ */
+function composeAssistantReply(
+  _userText: string,
+  parsed: ParsedRequest,
+  resolved: { lineupCount: number; lineupSize: number; entry: number; sport: string },
+  result: AutoPilotResult,
+): ChatMessage {
+  const top = result.lineups[0];
+  if (!top) {
+    return {
+      role: "assistant",
+      text:
+        "I couldn't find a valid lineup with that — the pool is too thin for the size you asked for, or all picks are on one team. Try a smaller size or a different sport.",
+    };
+  }
+
+  const understood: string[] = [];
+  if (parsed.matched.includes("count")) understood.push(`${resolved.lineupCount} ${resolved.lineupCount === 1 ? "slip" : "slips"}`);
+  if (parsed.matched.includes("size")) understood.push(`${resolved.lineupSize}-pick`);
+  if (parsed.matched.includes("entry")) understood.push(`$${resolved.entry} entry`);
+  if (parsed.matched.includes("sport")) understood.push(resolved.sport);
+  if (parsed.mode) understood.push(`${parsed.mode} mode`);
+
+  const understoodLine =
+    understood.length > 0
+      ? `Got it — ${understood.join(" · ")}.`
+      : `Going with our defaults — ${resolved.lineupCount} ${resolved.lineupSize}-pick slip${resolved.lineupCount === 1 ? "" : "s"} at $${resolved.entry}.`;
+
+  const grade = gradeLineup(top.hitProbability);
+
+  return {
+    role: "assistant",
+    text: understoodLine,
+    preview: {
+      lineupId: top.id,
+      hitProb: top.hitProbability,
+      grade,
+      grossPayout: top.grossPayout,
+      expectedValue: top.expectedValue,
+      size: top.picks.length,
+      playType: top.playType,
+      entry: resolved.entry,
+      count: resolved.lineupCount,
+      picks: top.picks.map((p) => ({
+        player: p.prop.playerName,
+        statType: p.prop.statType,
+        line: p.prop.line,
+        side: p.side,
+      })),
+    },
+  };
+}
 
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
@@ -72,6 +161,13 @@ export default function AutoPilotPage() {
     entry: number;
     sport: string;
   } | null>(null);
+
+  // Chat thread — natural-language requests like "I have $5, give me the
+  // best lineup across all sports". Each turn is one user message + one
+  // assistant reply; the assistant reply links to the lineup that was
+  // built for that request.
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
 
   const allAuto =
     lineupCount === "auto" &&
@@ -125,26 +221,36 @@ export default function AutoPilotPage() {
     return [{ name: "ALL", count: board.total }, ...board.leagues.slice(0, 8)];
   }, [board]);
 
-  const handleGenerate = async () => {
-    if (!board || crunching) return;
+  /**
+   * Resolve the current control state (with optional overrides from chat)
+   * into a concrete `{count, size, entry, sport}` and run the optimizer.
+   * Returns the resolved params + the AutoPilotResult so callers can chain
+   * follow-up logic (chat does this to generate its reply text).
+   */
+  const runGenerate = async (
+    overrides?: Partial<{ count: number; size: number; entry: number; sport: string }>,
+  ): Promise<{
+    resolved: { lineupCount: number; lineupSize: number; entry: number; sport: string };
+    result: AutoPilotResult;
+  } | null> => {
+    if (!board) return null;
     setCrunching(true);
-    // Yield a frame so the spinner can paint before the math kicks off.
     await new Promise((r) => setTimeout(r, 50));
 
-    // Resolve every "auto" knob to a concrete value. Size is the only one
-    // that costs anything to resolve — pickAutoSize sweeps 2..6 against the
-    // live board to find the size with the best expected dollars.
-    const resolvedSport = sport === "auto" ? "ALL" : sport;
-    const optionsForSizing = {
-      sport: resolvedSport,
-      realProjections: byProp,
-    };
+    const baseSport =
+      overrides?.sport ?? (sport === "auto" ? "ALL" : sport);
+    const optionsForSizing = { sport: baseSport, realProjections: byProp };
     const resolved = {
-      lineupCount: lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount,
+      lineupCount:
+        overrides?.count ??
+        (lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount),
       lineupSize:
-        lineupSize === "auto" ? pickAutoSize(board.props, optionsForSizing) : lineupSize,
-      entry: entry === "auto" ? AUTO_ENTRY_DEFAULT : entry,
-      sport: resolvedSport,
+        overrides?.size ??
+        (lineupSize === "auto" ? pickAutoSize(board.props, optionsForSizing) : lineupSize),
+      entry:
+        overrides?.entry ??
+        (entry === "auto" ? AUTO_ENTRY_DEFAULT : entry),
+      sport: baseSport,
     };
 
     const r = buildAutoLineups(
@@ -157,6 +263,77 @@ export default function AutoPilotPage() {
     setResult(r);
     setResolvedParams(resolved);
     setCrunching(false);
+    return { resolved, result: r };
+  };
+
+  const handleGenerate = () => runGenerate();
+
+  /**
+   * Chat send — parse natural language, mirror the parsed values into the
+   * visible control state (so the user sees what we understood), then run
+   * the generator with those same values as explicit overrides. The
+   * overrides matter because React state updates above don't flush before
+   * we call runGenerate, so without them we'd race.
+   */
+  const handleChatSend = async () => {
+    if (!board || crunching) return;
+    const text = chatDraft.trim();
+    if (!text) return;
+    setChatDraft("");
+    setChatMessages((m) => [...m, { role: "user", text }]);
+
+    const knownSports = (board.leagues ?? []).map((l) => l.name);
+    const parsed = parseRequest(text, knownSports);
+
+    // Mirror each matched value into the visible control state. Unmatched
+    // values are left alone so the user's prior selections persist between
+    // chat turns. Reset-all phrasings ("surprise me", "anything") drop
+    // every knob back to Auto.
+    if (parsed.resetAll) {
+      setLineupCount("auto");
+      setLineupSize("auto");
+      setEntry("auto");
+      setSport("auto");
+    }
+    if (parsed.count != null) setLineupCount(parsed.count);
+    if (parsed.size != null) setLineupSize(parsed.size);
+    if (parsed.entry != null) setEntry(parsed.entry);
+    if (parsed.sport != null) setSport(parsed.sport);
+
+    // Pending bubble while we crunch — replaced once the optimizer returns.
+    const placeholderIdx = chatMessages.length + 1;
+    setChatMessages((m) => [...m, { role: "assistant", text: "On it — checking the board..." }]);
+
+    // Build overrides explicitly so runGenerate doesn't fall back to stale
+    // React state. When the user said "surprise me", we pass the Auto
+    // defaults straight through instead of relying on the just-set state.
+    const overrides: Partial<{ count: number; size: number; entry: number; sport: string }> = {};
+    if (parsed.resetAll) {
+      overrides.count = AUTO_COUNT_DEFAULT;
+      overrides.entry = AUTO_ENTRY_DEFAULT;
+      overrides.sport = "ALL";
+      // size: leave undefined so runGenerate's pickAutoSize kicks in
+    }
+    if (parsed.count != null) overrides.count = parsed.count;
+    if (parsed.size != null) overrides.size = parsed.size;
+    if (parsed.entry != null) overrides.entry = parsed.entry;
+    if (parsed.sport != null) overrides.sport = parsed.sport;
+
+    const out = await runGenerate(overrides);
+    if (!out) {
+      setChatMessages((m) =>
+        m.map((msg, i) =>
+          i === placeholderIdx
+            ? { role: "assistant", text: "I can't reach the board right now — try again in a sec." }
+            : msg,
+        ),
+      );
+      return;
+    }
+    const reply = composeAssistantReply(text, parsed, out.resolved, out.result);
+    setChatMessages((m) =>
+      m.map((msg, i) => (i === placeholderIdx ? reply : msg)),
+    );
   };
 
   // Push the generated lineups into the slip store and jump to the
@@ -232,6 +409,95 @@ export default function AutoPilotPage() {
       </motion.div>
 
       {/* ════════════════════════════════════════════════════════════
+          CHAT — natural-language entry
+          Users can just describe what they want: "I have $5, give me the
+          best lineup to easily win." We parse, run the optimizer, grade
+          the top result, and reply inline.
+          ════════════════════════════════════════════════════════════ */}
+      <motion.section
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.03 }}
+        className="mt-8 rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/10 via-[#7B2FFF]/10 to-[#FF3AF2]/10 backdrop-blur-sm overflow-hidden"
+        aria-label="Chat with Auto-Pilot"
+      >
+        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b-4 border-dashed border-[#00F5D4]/30">
+          <div className="w-10 h-10 rounded-2xl border-4 border-[#00F5D4] bg-[#00F5D4] text-[#0D0D1A] flex items-center justify-center flex-shrink-0">
+            <MessageCircle size={18} strokeWidth={3} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm md:text-base text-white">
+              Just tell me what you want
+            </h2>
+            <p className="text-white/55 text-[11px] mt-0.5">
+              Free-text — I&apos;ll parse it and grade what I build for you.
+            </p>
+          </div>
+        </div>
+
+        {/* Conversation thread — collapses when empty so the panel stays
+            compact for first-time users. Auto-scrolls down on new turns
+            via the inner ChatThread component. */}
+        {chatMessages.length > 0 && (
+          <ChatThread messages={chatMessages} entry={resolvedParams?.entry ?? 20} />
+        )}
+
+        {/* Input + send */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleChatSend();
+          }}
+          className="p-3 md:p-4 flex items-stretch gap-2 md:gap-3"
+        >
+          <input
+            type="text"
+            value={chatDraft}
+            onChange={(e) => setChatDraft(e.target.value)}
+            placeholder='Try "I have $5, give me the best lineup to easily win"'
+            disabled={crunching || !board}
+            aria-label="Chat with Auto-Pilot"
+            className="flex-1 min-w-0 h-12 md:h-14 rounded-full border-4 border-[#00F5D4] bg-[#0D0D1A]/60 px-5 font-bold text-white placeholder:text-white/40 focus:outline-none focus:border-[#FFE600] focus:ring-4 focus:ring-[#00F5D4]/30 transition-all"
+          />
+          <button
+            type="submit"
+            disabled={crunching || !board || !chatDraft.trim()}
+            className="h-12 md:h-14 px-5 md:px-6 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-xs md:text-sm flex items-center gap-2 hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+          >
+            {crunching ? (
+              <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                <Loader2 size={16} strokeWidth={3} />
+              </motion.span>
+            ) : (
+              <Send size={16} strokeWidth={3} />
+            )}
+            <span className="hidden sm:inline">Send</span>
+          </button>
+        </form>
+
+        {/* Example prompts — only shown when the thread is empty. Click
+            populates the input so users learn what phrasings work. */}
+        {chatMessages.length === 0 && (
+          <div className="px-4 pb-4 flex flex-wrap gap-2">
+            {[
+              "I have $5, give me the best lineup to easily win",
+              "Build me 3 NBA slips for $20",
+              "Surprise me",
+              "One safe 4-pick",
+            ].map((s) => (
+              <button
+                key={s}
+                onClick={() => setChatDraft(s)}
+                className="px-3 py-1.5 rounded-full border-2 border-dashed border-white/25 text-white/65 hover:text-white hover:border-white/50 text-[11px] font-bold uppercase tracking-widest transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </motion.section>
+
+      {/* ════════════════════════════════════════════════════════════
           MASTER "ALL AUTO" CTA
           The fastest path through this page: leave every knob on Auto and
           hit the button. The card calls that out at the top, and when the
@@ -242,7 +508,7 @@ export default function AutoPilotPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.05 }}
         className={cn(
-          "mt-8 rounded-3xl border-4 p-4 md:p-5 flex flex-wrap items-center gap-4 transition-colors",
+          "mt-4 rounded-3xl border-4 p-4 md:p-5 flex flex-wrap items-center gap-4 transition-colors",
           allAuto
             ? "border-[#FFE600] bg-gradient-to-r from-[#FF3AF2]/20 via-[#7B2FFF]/20 to-[#00F5D4]/20"
             : "border-dashed border-white/20 bg-[#2D1B4E]/30",
@@ -899,6 +1165,143 @@ function ResolvedChip({
       {auto && <Wand2 size={10} strokeWidth={3} />}
       {label}
     </span>
+  );
+}
+
+/**
+ * Scroll-pinned chat transcript. Each turn is one user bubble or one
+ * assistant bubble; assistant bubbles that produced a lineup also render
+ * a compact preview card with the grade, hit %, and picks.
+ *
+ * Auto-scrolls to the bottom whenever new messages arrive so the latest
+ * reply is always visible without manual scrolling.
+ */
+function ChatThread({
+  messages,
+  entry,
+}: {
+  messages: ChatMessage[];
+  entry: number;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+  return (
+    <div
+      ref={scrollRef}
+      className="max-h-[420px] overflow-y-auto px-4 md:px-5 py-4 space-y-3 border-b-4 border-dashed border-[#00F5D4]/30"
+    >
+      <AnimatePresence initial={false}>
+        {messages.map((m, i) => (
+          <ChatBubble key={i} message={m} entry={entry} />
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function ChatBubble({ message, entry }: { message: ChatMessage; entry: number }) {
+  const isUser = message.role === "user";
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", damping: 22 }}
+      className={cn("flex", isUser ? "justify-end" : "justify-start")}
+    >
+      <div
+        className={cn(
+          "max-w-[85%] rounded-3xl px-4 py-2.5 border-2",
+          isUser
+            ? "bg-gradient-to-r from-[#FF3AF2] to-[#7B2FFF] border-[#FFE600] text-white rounded-br-md"
+            : "bg-[#0D0D1A]/70 border-[#00F5D4]/60 text-white rounded-bl-md",
+        )}
+      >
+        <p className="text-sm leading-snug">{message.text}</p>
+        {message.preview && <LineupPreview preview={message.preview} entry={entry} />}
+      </div>
+    </motion.div>
+  );
+}
+
+/**
+ * Compact lineup preview rendered inside an assistant bubble. Shows the
+ * letter grade, hit %, and a stack of the picks so the user can read it
+ * without scrolling down to the main results section.
+ */
+function LineupPreview({
+  preview,
+  entry,
+}: {
+  preview: NonNullable<ChatMessage["preview"]>;
+  entry: number;
+}) {
+  const evColor = preview.expectedValue >= 0 ? "#4ADE80" : "#F87171";
+  const gradeColor = GRADE_COLOR[preview.grade];
+  return (
+    <div className="mt-3 rounded-2xl border-2 border-[#00F5D4]/40 bg-[#0D0D1A]/60 p-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div
+          className="w-12 h-12 rounded-2xl flex items-center justify-center font-[family-name:var(--font-display)] text-3xl text-[#0D0D1A] flex-shrink-0"
+          style={{ background: gradeColor }}
+          aria-label={`Grade ${preview.grade}`}
+        >
+          {preview.grade}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-[10px] text-white/55">
+            {preview.size}-pick {preview.playType === "power" ? "Power" : "Flex"} · ${preview.entry || entry} entry
+          </div>
+          <div className="flex items-baseline gap-3 mt-0.5 flex-wrap">
+            <span className="font-[family-name:var(--font-display)] text-2xl text-[#FFE600] leading-none">
+              {(preview.hitProb * 100).toFixed(1)}%
+            </span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-white/60">
+              chance to hit
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2 mt-1 text-xs flex-wrap">
+            <span style={{ color: evColor }} className="font-bold">
+              {preview.expectedValue >= 0 ? "+" : ""}${preview.expectedValue.toFixed(2)} avg
+            </span>
+            <span className="text-white/40">·</span>
+            <span className="text-[#00F5D4] font-bold">${preview.grossPayout.toFixed(0)} if it hits</span>
+          </div>
+        </div>
+      </div>
+      <ul className="mt-3 space-y-1">
+        {preview.picks.map((p, i) => {
+          const isMore = p.side === "more";
+          const sideColor = isMore ? "#4ADE80" : "#F87171";
+          return (
+            <li
+              key={`${p.player}-${i}`}
+              className="flex items-center gap-2 text-[11px]"
+            >
+              <span
+                className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-[family-name:var(--font-display)] flex-shrink-0"
+                style={{ background: `${sideColor}30`, color: sideColor, border: `1px solid ${sideColor}` }}
+              >
+                {i + 1}
+              </span>
+              <span className="font-bold text-white truncate">{p.player}</span>
+              <span className="text-white/55 truncate">
+                {p.statType} {isMore ? "More" : "Less"} {p.line}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {preview.count > 1 && (
+        <p className="mt-2 text-[10px] text-white/45 uppercase tracking-widest font-bold">
+          + {preview.count - 1} more {preview.count - 1 === 1 ? "lineup" : "lineups"} below
+        </p>
+      )}
+    </div>
   );
 }
 
