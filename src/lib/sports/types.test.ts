@@ -1,3 +1,6 @@
+// Compile-time tests: this file has no runtime assertions. The TypeScript compiler
+// catches any drift in the SportAdapter contract by failing to type-check the
+// literal values below.
 import type { SportAdapter, RawGame, PlayerRef, SportArtifacts, Adjustment } from "./types";
 
 // Compile-time tests: these will fail TS check if the types don't exist or have wrong shapes.
