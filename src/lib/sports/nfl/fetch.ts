@@ -40,13 +40,18 @@ async function fetchBoxScorePlayers(eventId: string): Promise<PlayerRef[]> {
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
-  for (const team of NFL_TEAMS) {
-    const events = await fetchTeamSchedule(team, y);
-    for (const eventId of events.slice(0, 2)) {
-      for (const p of await fetchBoxScorePlayers(eventId)) {
-        if (!seen.has(p.id)) seen.set(p.id, p);
+  // Try current year first; if no usable boxscores (off-season), fall back to
+  // year-1. ESPN returns events for future seasons without populated boxscores.
+  for (const season of [y, y - 1]) {
+    for (const team of NFL_TEAMS) {
+      const events = await fetchTeamSchedule(team, season);
+      for (const eventId of events.slice(0, 2)) {
+        for (const p of await fetchBoxScorePlayers(eventId)) {
+          if (!seen.has(p.id)) seen.set(p.id, p);
+        }
       }
     }
+    if (seen.size > 50) break;
   }
   return [...seen.values()];
 }
