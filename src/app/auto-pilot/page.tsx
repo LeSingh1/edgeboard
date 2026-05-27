@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Sparkles,
   Zap,
@@ -30,6 +31,7 @@ import {
 } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { accentHexFor, cn } from "@/lib/cn";
@@ -59,20 +61,23 @@ interface ChatMessage {
 
 /**
  * Build a chat reply that summarizes what we understood + grades the top
- * lineup. The phrasing is intentionally simple — same shape every time so
- * it reads like a quick assistant response rather than a wall of text.
+ * lineup. When Claude returned a free-text reply we use that verbatim;
+ * otherwise we fall back to a templated "Got it — X" summary built from
+ * the parser's matched fields.
  */
 function composeAssistantReply(
   _userText: string,
   parsed: ParsedRequest,
   resolved: { lineupCount: number; lineupSize: number; entry: number; sport: string },
   result: AutoPilotResult,
+  claudeReply: string | null = null,
 ): ChatMessage {
   const top = result.lineups[0];
   if (!top) {
     return {
       role: "assistant",
       text:
+        claudeReply ??
         "I couldn't find a valid lineup with that — the pool is too thin for the size you asked for, or all picks are on one team. Try a smaller size or a different sport.",
     };
   }
@@ -85,9 +90,10 @@ function composeAssistantReply(
   if (parsed.mode) understood.push(`${parsed.mode} mode`);
 
   const understoodLine =
-    understood.length > 0
+    claudeReply ??
+    (understood.length > 0
       ? `Got it — ${understood.join(" · ")}.`
-      : `Going with our defaults — ${resolved.lineupCount} ${resolved.lineupSize}-pick slip${resolved.lineupCount === 1 ? "" : "s"} at $${resolved.entry}.`;
+      : `Going with our defaults — ${resolved.lineupCount} ${resolved.lineupSize}-pick slip${resolved.lineupCount === 1 ? "" : "s"} at $${resolved.entry}.`);
 
   const grade = gradeLineup(top.hitProbability);
 
@@ -140,6 +146,7 @@ export default function AutoPilotPage() {
   const router = useRouter();
   const setLineupResults = useLineupStore((s) => s.setResults);
   const byProp = useProjectionStore((s) => s.byProp);
+  const anthropicKey = useSettingsStore((s) => s.anthropicKey);
 
   const [board, setBoard] = useState<ApiResponse | null>(null);
   const [loadingBoard, setLoadingBoard] = useState(true);
@@ -274,6 +281,12 @@ export default function AutoPilotPage() {
    * the generator with those same values as explicit overrides. The
    * overrides matter because React state updates above don't flush before
    * we call runGenerate, so without them we'd race.
+   *
+   * When the user has an Anthropic key set in Settings, the message is
+   * sent to /api/chat first — Claude's reply text replaces the local
+   * summary, and Claude's structured `intent` replaces the regex parse.
+   * When the API call fails (or no key), we fall back to the regex parser
+   * so the chat keeps working offline.
    */
   const handleChatSend = async () => {
     if (!board || crunching) return;
@@ -283,7 +296,90 @@ export default function AutoPilotPage() {
     setChatMessages((m) => [...m, { role: "user", text }]);
 
     const knownSports = (board.leagues ?? []).map((l) => l.name);
-    const parsed = parseRequest(text, knownSports);
+    let parsed = parseRequest(text, knownSports);
+    let claudeReply: string | null = null;
+
+    // Pending bubble while we crunch — replaced once the optimizer returns.
+    const placeholderIdx = chatMessages.length + 1;
+    setChatMessages((m) => [
+      ...m,
+      {
+        role: "assistant",
+        text: anthropicKey ? "Thinking..." : "On it — checking the board...",
+      },
+    ]);
+
+    // Try Claude when a key is set. Local parse stays as the fallback so
+    // a 5xx from the API doesn't break the chat.
+    if (anthropicKey) {
+      try {
+        const recent = chatMessages.slice(-6).map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.text,
+        }));
+        const r = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            apiKey: anthropicKey,
+            message: text,
+            history: recent,
+            knownSports,
+          }),
+        });
+        if (r.ok) {
+          const data = (await r.json()) as {
+            reply?: string;
+            intent?: {
+              count?: number;
+              size?: number;
+              entry?: number;
+              sport?: string;
+              mode?: "safe" | "balanced" | "aggressive";
+              resetAll?: boolean;
+            };
+          };
+          if (data.reply) claudeReply = data.reply;
+          if (data.intent) {
+            // Convert Claude's loose intent to ParsedRequest shape. matched[]
+            // drives the reply summary — only mention fields the model
+            // actually set.
+            const i = data.intent;
+            const matched: ParsedRequest["matched"] = [];
+            const next: ParsedRequest = { matched };
+            if (i.count !== undefined) {
+              next.count = i.count;
+              matched.push("count");
+            }
+            if (i.size !== undefined) {
+              next.size = i.size;
+              matched.push("size");
+            }
+            if (i.entry !== undefined) {
+              next.entry = i.entry;
+              matched.push("entry");
+            }
+            if (i.sport !== undefined) {
+              next.sport = i.sport;
+              matched.push("sport");
+            }
+            if (i.mode !== undefined) {
+              next.mode = i.mode;
+              matched.push("mode");
+            }
+            if (i.resetAll) {
+              next.resetAll = true;
+              matched.push("resetAll");
+            }
+            parsed = next;
+          }
+        }
+      } catch {
+        // Network/parse failure — keep the local regex parse we computed
+        // up top, plus null claudeReply, so the assistant falls back to
+        // the canned summary copy. Nothing else to do.
+      }
+    }
 
     // Mirror each matched value into the visible control state. Unmatched
     // values are left alone so the user's prior selections persist between
@@ -299,10 +395,6 @@ export default function AutoPilotPage() {
     if (parsed.size != null) setLineupSize(parsed.size);
     if (parsed.entry != null) setEntry(parsed.entry);
     if (parsed.sport != null) setSport(parsed.sport);
-
-    // Pending bubble while we crunch — replaced once the optimizer returns.
-    const placeholderIdx = chatMessages.length + 1;
-    setChatMessages((m) => [...m, { role: "assistant", text: "On it — checking the board..." }]);
 
     // Build overrides explicitly so runGenerate doesn't fall back to stale
     // React state. When the user said "surprise me", we pass the Auto
@@ -330,7 +422,7 @@ export default function AutoPilotPage() {
       );
       return;
     }
-    const reply = composeAssistantReply(text, parsed, out.resolved, out.result);
+    const reply = composeAssistantReply(text, parsed, out.resolved, out.result, claudeReply);
     setChatMessages((m) =>
       m.map((msg, i) => (i === placeholderIdx ? reply : msg)),
     );
@@ -421,7 +513,7 @@ export default function AutoPilotPage() {
         className="mt-8 rounded-3xl border-4 border-[#00F5D4] bg-gradient-to-br from-[#00F5D4]/10 via-[#7B2FFF]/10 to-[#FF3AF2]/10 backdrop-blur-sm overflow-hidden"
         aria-label="Chat with Auto-Pilot"
       >
-        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b-4 border-dashed border-[#00F5D4]/30">
+        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b-4 border-dashed border-[#00F5D4]/30 flex-wrap">
           <div className="w-10 h-10 rounded-2xl border-4 border-[#00F5D4] bg-[#00F5D4] text-[#0D0D1A] flex items-center justify-center flex-shrink-0">
             <MessageCircle size={18} strokeWidth={3} />
           </div>
@@ -430,9 +522,31 @@ export default function AutoPilotPage() {
               Just tell me what you want
             </h2>
             <p className="text-white/55 text-[11px] mt-0.5">
-              Free-text — I&apos;ll parse it and grade what I build for you.
+              {anthropicKey
+                ? "Powered by Claude — ask anything, I'll grade what I build."
+                : "Local parser — add a Claude key in Settings for real conversation."}
             </p>
           </div>
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 px-3 py-1 rounded-full border-2 text-[10px] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest",
+              anthropicKey
+                ? "border-[#4ADE80] text-[#4ADE80] bg-[#4ADE80]/10"
+                : "border-white/30 text-white/50",
+            )}
+            title={anthropicKey ? "Anthropic API key found in Settings" : "No Anthropic key — using local parser"}
+          >
+            <Sparkles size={11} strokeWidth={3} />
+            {anthropicKey ? "Claude on" : "Local"}
+          </span>
+          {!anthropicKey && (
+            <Link
+              href="/settings"
+              className="text-[10px] font-bold uppercase tracking-widest text-[#00F5D4] hover:underline"
+            >
+              Add key →
+            </Link>
+          )}
         </div>
 
         {/* Conversation thread — collapses when empty so the panel stays
