@@ -23,12 +23,14 @@ async function fetchTeamsInCompetition(competition: string): Promise<string[]> {
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
-    const body = await res.json() as { sports?: Array<{ leagues?: Array<{ teams?: Array<{ team?: { abbreviation?: string; slug?: string } }> }> }> };
+    const body = await res.json() as { sports?: Array<{ leagues?: Array<{ teams?: Array<{ team?: { id?: string; abbreviation?: string; slug?: string } }> }> }> };
     const out: string[] = [];
     for (const sport of body.sports ?? []) {
       for (const lg of sport.leagues ?? []) {
         for (const t of lg.teams ?? []) {
-          const id = t.team?.abbreviation ?? t.team?.slug;
+          // Prefer numeric id, then slug. Abbreviations ("BOU", "ARS") 400 on
+          // the schedule endpoint — must use id or slug ("eng.bournemouth").
+          const id = t.team?.id ?? t.team?.slug;
           if (id) out.push(id);
         }
       }
@@ -60,22 +62,28 @@ async function fetchBoxScorePlayers(competition: string, eventId: string): Promi
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
-  for (const competition of COMPETITIONS) {
-    const teams = await fetchTeamsInCompetition(competition);
-    for (const team of teams.slice(0, 8)) {  // sample first 8 teams per competition
-      const eventsUrl = `https://site.api.espn.com/apis/site/v2/sports/soccer/${competition}/teams/${team}/schedule?season=${y}`;
-      try {
-        const res = await fetch(eventsUrl, { headers: { "User-Agent": UA } });
-        if (!res.ok) continue;
-        const body = await res.json() as { events?: Array<{ id?: string }> };
-        for (const e of (body.events ?? []).slice(0, 2)) {
-          if (!e.id) continue;
-          for (const p of await fetchBoxScorePlayers(competition, e.id)) {
-            if (!seen.has(p.id)) seen.set(p.id, p);
+  // European soccer seasons span calendar years (Aug–May), so for May 2026 the
+  // "current" season returns no events. Walk back through y, y-1 until we have
+  // a meaningful roster.
+  for (const season of [y, y - 1]) {
+    for (const competition of COMPETITIONS) {
+      const teams = await fetchTeamsInCompetition(competition);
+      for (const team of teams.slice(0, 8)) {  // sample first 8 teams per competition
+        const eventsUrl = `https://site.api.espn.com/apis/site/v2/sports/soccer/${competition}/teams/${team}/schedule?season=${season}`;
+        try {
+          const res = await fetch(eventsUrl, { headers: { "User-Agent": UA } });
+          if (!res.ok) continue;
+          const body = await res.json() as { events?: Array<{ id?: string }> };
+          for (const e of (body.events ?? []).slice(0, 2)) {
+            if (!e.id) continue;
+            for (const p of await fetchBoxScorePlayers(competition, e.id)) {
+              if (!seen.has(p.id)) seen.set(p.id, p);
+            }
           }
-        }
-      } catch { /* skip */ }
+        } catch { /* skip */ }
+      }
     }
+    if (seen.size > 50) break;
   }
   return [...seen.values()];
 }
