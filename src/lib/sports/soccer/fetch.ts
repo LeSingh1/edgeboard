@@ -44,14 +44,20 @@ async function fetchBoxScorePlayers(competition: string, eventId: string): Promi
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
-    const body = await res.json() as { boxscore?: { players?: Array<{ team?: { abbreviation?: string }; statistics?: Array<{ athletes?: Array<{ athlete?: { id?: string; displayName?: string } }> }> }> } };
+    // Soccer summary uses a top-level `rosters` array (one entry per team) with
+    // `roster[]` of `{ athlete: { id, displayName } }` — not the basketball-style
+    // `boxscore.players[].statistics[].athletes[]` shape.
+    const body = await res.json() as {
+      rosters?: Array<{
+        team?: { abbreviation?: string };
+        roster?: Array<{ athlete?: { id?: string; displayName?: string } }>;
+      }>;
+    };
     const out: PlayerRef[] = [];
-    for (const team of body.boxscore?.players ?? []) {
-      for (const stat of team.statistics ?? []) {
-        for (const a of stat.athletes ?? []) {
-          if (a.athlete?.id && a.athlete?.displayName) {
-            out.push({ id: a.athlete.id, name: a.athlete.displayName, team: team.team?.abbreviation });
-          }
+    for (const tm of body.rosters ?? []) {
+      for (const r of tm.roster ?? []) {
+        if (r.athlete?.id && r.athlete?.displayName) {
+          out.push({ id: r.athlete.id, name: r.athlete.displayName, team: tm.team?.abbreviation });
         }
       }
     }
