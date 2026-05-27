@@ -28,6 +28,11 @@ import {
   isRound2TeamSync,
   applyPlayoffCalibrationSync,
 } from "@/lib/applyPlayoffCalibration";
+import {
+  getGameScript,
+  getGameScriptDeltaSync,
+  getExpectedMarginSync,
+} from "@/lib/applyGameScript";
 
 export interface ProjectionAdjustment {
   /** "Recent form", "vs NY Knicks", "Home/Away", etc. */
@@ -158,6 +163,13 @@ function applyAdjustments(
     propStat?: string;
     /** Player display name — used by the breakout-profile lookup. */
     playerName?: string;
+    /** Player's team abbreviation — needed for expected-margin estimation
+     *  in the game-script signal. */
+    propTeam?: string;
+    /** Per-game minutes aligned 1:1 with `chronoValues`. Median minutes
+     *  classifies the player as starter/bench in the game-script bucket
+     *  lookup. */
+    minutes?: number[];
     /** Net pMore swing from press-conference / news intel (`heuristicIntel.ts`
      *  + `claudeIntel.ts`), pre-computed by the caller and passed in. Positive =
      *  intel favors MORE. Applied as a direct probability swing AFTER the
@@ -441,6 +453,49 @@ function applyAdjustments(
           confidence,
         });
         adjustedMean += blendedShift;
+      }
+    }
+  }
+
+  // ── (7) Game-script / blowout context ───────────────────────────
+  //   When the matchup projects to a decisive margin, starters on the
+  //   expected losing side and bench guys on the winning side see their
+  //   minutes flipped relative to season baseline. Bucketed residuals
+  //   trained on the full 2025-26 corpus capture the typical shift.
+  if (signals.propTeam && signals.propOpponent && signals.propStat) {
+    const em = getExpectedMarginSync(signals.propTeam, signals.propOpponent);
+    if (em && Math.abs(em.margin) >= C.gameScriptMinMargin && signals.minutes && signals.minutes.length >= 5) {
+      const sortedMins = [...signals.minutes].filter((m) => Number.isFinite(m) && m > 0).sort((a, b) => a - b);
+      if (sortedMins.length >= 5) {
+        const mid = Math.floor(sortedMins.length / 2);
+        const medMin = sortedMins.length % 2
+          ? sortedMins[mid]
+          : (sortedMins[mid - 1] + sortedMins[mid]) / 2;
+        const isStarter = medMin >= 25;
+        const gs = getGameScriptDeltaSync({
+          stat: signals.propStat,
+          expectedMargin: em.margin,
+          teamWillWin: em.margin > 0,
+          isStarter,
+        });
+        if (gs && gs.sample >= C.gameScriptMinSample) {
+          const blendedShift = gs.delta * C.gameScriptConfidence;
+          const marginAbs = Math.abs(em.margin);
+          const marginLabel =
+            marginAbs <= 7 ? "close" : marginAbs <= 15 ? "decisive" : "blowout";
+          const sideLabel = em.margin > 0 ? "expected win" : "expected loss";
+          adjustments.push({
+            label: `Game script (${marginLabel} ${sideLabel})`,
+            shift: r3(blendedShift),
+            pMoreSwing: 0,
+            reason:
+              `Projected margin ${r3(em.margin)} pts. ${isStarter ? "Starter" : "Bench"} ${signals.propStat.toLowerCase()} ` +
+              `in ${marginLabel} ${em.margin > 0 ? "wins" : "losses"} averages ` +
+              `${gs.delta >= 0 ? "+" : ""}${r3(gs.delta)} vs rolling baseline (${gs.sample} games).`,
+            confidence: C.gameScriptConfidence,
+          });
+          adjustedMean += blendedShift;
+        }
       }
     }
   }
@@ -972,6 +1027,7 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
   // We pull opponent, date, AND atVs (home/away marker) from the gamelog so
   // the home/away + days-rest signals downstream can read them.
   const chronoValues: number[] = [];
+  const minutesArr: number[] = [];
   const opponents: (string | undefined)[] = [];
   const dates: (string | undefined)[] = [];
   const atVsArr: (string | undefined)[] = [];
@@ -984,18 +1040,22 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
     // within-game minutes vary, but vastly better than the implied 50%).
     if (frac < 1) v = v * frac;
     chronoValues.push(v);
+    minutesArr.push(extractByLabel(e.stats, labels, "MIN"));
     const m = meta.get(e.eventId);
     opponents.push(m?.opponentAbbr);
     dates.push(m?.gameDate);
     atVsArr.push(m?.atVs);
   }
   // Sort chronologically (oldest → newest) so recent-form / days-rest signals see the right order
-  const sortable = chronoValues.map((v, i) => ({ v, opp: opponents[i], d: dates[i], hv: atVsArr[i] }));
+  const sortable = chronoValues.map((v, i) => ({
+    v, opp: opponents[i], d: dates[i], hv: atVsArr[i], mn: minutesArr[i],
+  }));
   sortable.sort((a, b) => (a.d ?? "").localeCompare(b.d ?? ""));
   const sortedValues = sortable.map((s) => s.v);
   const sortedOpps = sortable.map((s) => s.opp);
   const sortedDates = sortable.map((s) => s.d);
   const sortedAtVs = sortable.map((s) => s.hv);
+  const sortedMins = sortable.map((s) => s.mn);
 
   // Was the player HOME in this prop's game? We compute this server-side in
   // /api/props from the PrizePicks game-info block (home/away team
@@ -1024,6 +1084,8 @@ export async function nbaProjection(prop: Prop): Promise<ProjectionResult> {
     propGameTime: prop.gameTime,
     propStat: prop.statType,
     playerName: prop.playerName,
+    propTeam: prop.team,
+    minutes: sortedMins,
     intelSwing: prop.intelSwing,
     intelEvidence: prop.intelEvidence,
   });
@@ -1050,6 +1112,7 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
       getPlayoffCalibration(),
       getRound2Teams(),
       getBreakoutProfiles(),
+      getGameScript(),
     ]);
     const raw = await nbaProjection(prop);
     return applyCalibrationToResult(

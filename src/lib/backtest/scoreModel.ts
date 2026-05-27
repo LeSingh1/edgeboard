@@ -16,7 +16,7 @@
  * never visible to the model.
  */
 
-import { ESPN_BASKETBALL_STATS } from "@/lib/realProjections";
+import { ESPN_BASKETBALL_STATS, extractByLabel } from "@/lib/realProjections";
 import { MODEL_CONSTANTS, type ModelConstants } from "@/lib/modelConstants";
 import type { PlayerGamelog } from "@/lib/backtest/fetchSeasonLogs";
 import { defensiveDelta, type DefenseRatings } from "@/lib/backtest/defenseRatings";
@@ -25,6 +25,12 @@ import {
   breakoutExcess,
   type BreakoutProfiles,
 } from "@/lib/backtest/breakoutProfile";
+import {
+  expectedMarginFor,
+  gameScriptDelta,
+  type GameScriptProfile,
+  type TeamScoring,
+} from "@/lib/backtest/gameScript";
 
 export interface ScoreInput {
   player: PlayerGamelog;
@@ -50,6 +56,11 @@ export interface ScoreInput {
   /** Per-player breakout-rate profiles. When provided + player has data,
    *  fires the breakout-context signal. */
   breakoutProfiles?: BreakoutProfiles;
+  /** Per-team scoring profile (off/def per game) for expected-margin
+   *  estimation in the game-script signal. */
+  teamScoring?: TeamScoring;
+  /** Per-stat × per-bucket residual profile for the game-script signal. */
+  gameScriptProfile?: GameScriptProfile;
 }
 
 export interface ScoreOutput {
@@ -300,6 +311,47 @@ export function scoreModel(input: ScoreInput): ScoreOutput | null {
           C.playoffConfidenceBase + playoffVals.length * C.playoffConfidencePerGame,
         );
         adjustedMean += shift * confidence;
+      }
+    }
+  }
+
+  // ── (7) Game-script / blowout-context residual ──────────────────
+  //   Need: expected margin, team-will-win flag, starter/bench role.
+  //   Expected margin comes from team-scoring profile; role comes from the
+  //   player's median minutes across prior games.
+  if (
+    input.gameScriptProfile &&
+    input.teamScoring &&
+    input.propOpponent &&
+    player.team
+  ) {
+    const em = expectedMarginFor(input.teamScoring, player.team, input.propOpponent);
+    if (em && Math.abs(em.margin) >= C.gameScriptMinMargin) {
+      // Role: median MIN across the player's prior games. Cheap to compute
+      // (≤ ~80 entries); recomputed per call rather than cached because the
+      // backtest scoreModel is one-shot per row.
+      const priorMins: number[] = [];
+      for (let i = 0; i < chronoIndex && i < eventsChrono.length; i++) {
+        const m = extractByLabel(eventsChrono[i].stats, player.labels, "MIN");
+        if (Number.isFinite(m) && m > 0) priorMins.push(m);
+      }
+      if (priorMins.length >= 5) {
+        priorMins.sort((a, b) => a - b);
+        const mid = Math.floor(priorMins.length / 2);
+        const medMin =
+          priorMins.length % 2
+            ? priorMins[mid]
+            : (priorMins[mid - 1] + priorMins[mid]) / 2;
+        const isStarter = medMin >= 25;
+        const gs = gameScriptDelta(input.gameScriptProfile, {
+          stat,
+          expectedMargin: em.margin,
+          teamWillWin: em.margin > 0,
+          isStarter,
+        });
+        if (gs && gs.sample >= C.gameScriptMinSample) {
+          adjustedMean += gs.delta * C.gameScriptConfidence;
+        }
       }
     }
   }

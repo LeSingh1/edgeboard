@@ -23,6 +23,7 @@ import { aggregate, type ScoredPick } from "@/lib/backtest/aggregate";
 import { fitPerStatCalibration } from "@/lib/backtest/fitCalibration";
 import { buildDefenseRatings } from "@/lib/backtest/defenseRatings";
 import { buildBreakoutProfiles } from "@/lib/backtest/breakoutProfile";
+import { buildGameScript } from "@/lib/backtest/gameScriptBuilder";
 import { crossValidateCalibration, walkForwardValidate } from "@/lib/backtest/crossValidate";
 
 const DATA_DIR = path.join(process.cwd(), "data", "backtest");
@@ -30,6 +31,8 @@ const REPORT_PATH = path.join(DATA_DIR, "report.json");
 const CALIBRATION_PATH = path.join(DATA_DIR, "calibration.json");
 const DEFENSE_PATH = path.join(DATA_DIR, "defenseRatings.json");
 const BREAKOUT_PATH = path.join(DATA_DIR, "breakoutProfiles.json");
+const GAME_SCRIPT_PROFILE_PATH = path.join(DATA_DIR, "gameScriptProfile.json");
+const TEAM_SCORING_PATH = path.join(DATA_DIR, "teamScoring.json");
 const CV_PATH = path.join(DATA_DIR, "crossValidation.json");
 const WALKFWD_PATH = path.join(DATA_DIR, "walkForward.json");
 
@@ -57,6 +60,16 @@ async function main() {
   console.log(
     `[backtest] breakout profiles: ${playersWithProfiles} players, ` +
       `baseline rates per stat → ${BREAKOUT_PATH}`,
+  );
+
+  // ── 2a-iii. Game-script residual profile + team-scoring table ────
+  const gs = buildGameScript(cache.players);
+  await fs.writeFile(GAME_SCRIPT_PROFILE_PATH, JSON.stringify(gs.profile, null, 2));
+  await fs.writeFile(TEAM_SCORING_PATH, JSON.stringify(gs.scoring, null, 2));
+  console.log(
+    `[backtest] game-script: ${Object.keys(gs.scoring.byTeam).length} teams, ` +
+      `${gs.observations.toLocaleString()} player-game residuals ` +
+      `(${gs.coverage.bothSides} events both-sides) → ${GAME_SCRIPT_PROFILE_PATH}`,
   );
 
   // ── 2b. Synthesize lines per (player, game, stat) ────────────────
@@ -98,6 +111,8 @@ async function main() {
         propGameTime: row.date,
         defenseRatings: defense,
         breakoutProfiles: breakout,
+        teamScoring: gs.scoring,
+        gameScriptProfile: gs.profile,
       });
       if (!out) {
         skipped++;

@@ -55,6 +55,17 @@ export const MODEL_CONSTANTS = {
   breakoutConfidence: 0.3,
   breakoutShiftSigmaScale: 0.5,
 
+  // ── Adjustment: game-script / blowout-context residual ────────────
+  /** Min |margin| to even fire the signal — sub-this is "close" and the
+   *  observed residuals are tiny noise. We still let the close-bucket fire
+   *  but with reduced confidence; tune via the confidence scalars below. */
+  gameScriptMinMargin: 4,
+  /** Bucket sample threshold below which we skip the lookup. */
+  gameScriptMinSample: 100,
+  /** Confidence applied to the bucket's mean residual. Conservative until
+   *  the signal proves itself in the backtest. */
+  gameScriptConfidence: 0.5,
+
   // ── pMore clamp ────────────────────────────────────────────────────
   pMoreClampLow: 0.1,
   pMoreClampHigh: 0.9,
