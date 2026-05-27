@@ -15,3 +15,5 @@ import { tennisAdapter } from "./tennis";
 registerAdapter(tennisAdapter);
 import { pgaAdapter } from "./pga";
 registerAdapter(pgaAdapter);
+import { aflAdapter } from "./afl";
+registerAdapter(aflAdapter);
