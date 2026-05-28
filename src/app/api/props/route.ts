@@ -157,7 +157,14 @@ function parseProjections(body: JsonApiResponse): CachedPayload {
     const league = leagueId ? leagueMap.get(leagueId) : undefined;
     const game = gameId ? gameMap.get(gameId) : undefined;
 
-    const playerName = (attr<string>(player, "display_name") ?? "Unknown").trim();
+    // Esports (LOL, CSGO, DOTA2) sometimes ship an empty display_name on
+    // the new_player entity — fall through name → team_name → prop
+    // description (which PrizePicks fills with the matchup for esports).
+    const playerName = (attr<string>(player, "display_name") ?? "").trim()
+      || (attr<string>(player, "name") ?? "").trim()
+      || (attr<string>(player, "team_name") ?? "").trim()
+      || (a.description as string ?? "").trim()
+      || "Unknown";
     const playerImage = attr<string | null>(player, "image_url") ?? null;
     const playerTeam = attr<string>(player, "team") ?? "";
     const playerTeamName = attr<string>(player, "market") ?? attr<string>(player, "team_name") ?? "";
@@ -186,9 +193,13 @@ function parseProjections(body: JsonApiResponse): CachedPayload {
         : undefined;
 
     const line = Number(a.line_score ?? 0);
-    const frac = Math.abs(line - Math.floor(line));
-    const isHalfPoint = Math.abs(frac - 0.5) < 0.001;
-    if (!isHalfPoint) continue;
+    // Drop only obviously invalid lines (0 or negative). Both half-point and
+    // integer lines are real PrizePicks offerings: integer lines push on exact
+    // hits (e.g. "Rebounds 5" pays Less if she gets ≤4, More if ≥6, push if 5).
+    // Historically this filter dropped integers as "junk" but as of 2026 PP
+    // ships ~700 integer-line props per pull (190 in WNBA alone) — they are
+    // not junk, they're a legit prop variant.
+    if (!isFinite(line) || line <= 0) continue;
 
     const statType = (a.stat_display_name as string) ?? (a.stat_type as string) ?? "";
     const id = `pp-${p.id}`;

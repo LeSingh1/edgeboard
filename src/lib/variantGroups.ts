@@ -121,9 +121,12 @@ export function groupByFamily(props: Prop[]): Map<string, VariantSet> {
     const stdLine = vs.standard?.line;
     if (a.goblins.length > 0) {
       vs.goblin = a.goblins.reduce((best, cur) => pickBetterRung(best, cur, stdLine));
+      // Stamp the standard reference line so the UI can show "Goblin 2.5 (std 3.5)".
+      if (stdLine !== undefined) vs.goblin = { ...vs.goblin, standardLine: stdLine };
     }
     if (a.demons.length > 0) {
       vs.demon = a.demons.reduce((best, cur) => pickBetterRung(best, cur, stdLine));
+      if (stdLine !== undefined) vs.demon = { ...vs.demon, standardLine: stdLine };
     }
     vs.allRungs = [...a.all].sort((x, y) => x.line - y.line);
     map.set(k, vs);

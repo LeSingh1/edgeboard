@@ -51,6 +51,10 @@ export interface Prop {
   refundable?: boolean;        // Whether the prop can be refunded
   adjustedOdds?: boolean;      // Whether odds have been adjusted
   // ── Implied probability surface ──
+  /** The standard variant's line for this family, when this prop is a
+   *  goblin or demon. Lets the UI show "Goblin 2.5 (std 3.5)" so users
+   *  know what they're comparing against. Undefined for standard props. */
+  standardLine?: number;
   pMore: number;               // 0..1, derived from oddsType (PrizePicks-implied)
   pLess: number;               // 0..1
   modelVersion: string;        // 'implied-v1' | 'xgb-v1' (future)

@@ -176,6 +176,30 @@ export function pickAutoSize(
 }
 
 /**
+ * Autopilot candidate score. Blends raw probability with a pick-type factor
+ * so the pool ranking favors (1) consistent standard over/under picks, then
+ * (2) goblins for their better payout-per-risk profile, then (3) demons last.
+ *
+ * Standard picks above ~0.65 get a confidence bonus because "always hitting"
+ * standard lines are the safest autopilot foundation. Goblins get a flat lift
+ * because the easier line + 0.85× payout stacks favorably in multi-pick
+ * lineups. Demons are slightly penalized — higher payout but lower hit rate
+ * makes them poor autopilot candidates.
+ */
+function autoScore(c: { prop: Prop; prob: number }): number {
+  const { prob, prop } = c;
+  let bonus = 1.0;
+  if (prop.oddsType === "standard") {
+    bonus = prob >= 0.65 ? 1.12 : 1.0;
+  } else if (prop.oddsType === "goblin") {
+    bonus = 1.06;
+  } else if (prop.oddsType === "demon") {
+    bonus = 0.92;
+  }
+  return prob * bonus;
+}
+
+/**
  * Score → top pool → optimize → diversity → return top K. See module header
  * for tradeoffs.
  */
@@ -217,9 +241,26 @@ export function buildAutoLineups(
     candidates.push(best);
   }
 
-  candidates.sort((a, b) => b.prob - a.prob);
+  candidates.sort((a, b) => autoScore(b) - autoScore(a));
+
+  // Per-league cap: PrizePicks limits how many picks from the same sub-league
+  // can appear in a single lineup. Segment sports (1Q, 2Q, 1H, 2H, etc.)
+  // are capped at 2; full-game sports have no hard cap. We enforce this at
+  // the pool level so the optimizer never even sees an illegal combination.
+  const leagueCounts = new Map<string, number>();
+  const leagueCapped: typeof candidates = [];
+  for (const c of candidates) {
+    const league = c.prop.sport.toUpperCase();
+    const isSegment = /\d[HQ]$/.test(league); // e.g. WNBA2H, NBA1Q
+    const maxPerLeague = isSegment ? 2 : Infinity;
+    const count = leagueCounts.get(league) ?? 0;
+    if (count >= maxPerLeague) continue;
+    leagueCounts.set(league, count + 1);
+    leagueCapped.push(c);
+  }
+
   const cap = options.maxPoolSize ?? poolCapFor(lineupSize);
-  const pool = candidates.slice(0, cap);
+  const pool = leagueCapped.slice(0, cap);
   const poolProps = pool.map((c) => c.prop);
 
   const realProjectionCount = real

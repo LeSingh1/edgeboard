@@ -19,10 +19,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Sparkles, Loader2, Bot, User, MessageSquare } from "lucide-react";
+import { Send, Sparkles, Loader2, Bot, User, MessageSquare, ArrowRight } from "lucide-react";
 import { buildAutoLineups } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
+import { useLineupStore } from "@/stores/lineupStore";
 import { POWER_MULTIPLIERS, FLEX_PAYOUT_TABLES, ODDS_FACTOR } from "@/lib/optimizer";
 import type { ProjectionResult } from "@/lib/realProjections";
 import type { Lineup, Prop } from "@/lib/types";
@@ -233,9 +235,14 @@ function summarizePlan(plan: PlanOption): string {
   const ev = plan.expectedReturn - plan.totalStake;
   const pPct = (plan.probAtLeastOneWins * 100).toFixed(0);
   const evSign = ev >= 0 ? "+" : "";
+  const perSlip = plan.lineups[0]?.grossPayout ?? 0;
+  const perSlipLabel = plan.lineupCount > 1
+    ? `Each slip pays $${perSlip.toFixed(0)} if it hits.`
+    : `Pays $${perSlip.toFixed(0)} if it hits.`;
   return (
     `${plan.lineupCount}× ${plan.lineupSize}-pick at $${plan.entryCost.toFixed(2)} each. ` +
-    `Hits at least once ~${pPct}% of the time. Expected return $${plan.expectedReturn.toFixed(2)} on $${plan.totalStake.toFixed(2)} staked (${evSign}$${ev.toFixed(2)} EV).`
+    `${perSlipLabel} ` +
+    `Hits at least once ~${pPct}% of the time (${evSign}$${ev.toFixed(2)} EV across all slips).`
   );
 }
 
@@ -244,8 +251,26 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const projections = useProjectionStore((s) => s.byProp);
+  const setResults = useLineupStore((s) => s.setResults);
+  const router = useRouter();
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  /** Push a plan's lineups into the lineup store and navigate to /slips. */
+  const handleViewSlips = (plan: PlanOption) => {
+    setResults({
+      lineups: plan.lineups,
+      totalGenerated: plan.lineups.length,
+      elapsedMs: 0,
+      params: {
+        lineupSize: plan.lineupSize,
+        playType: plan.lineups[0]?.playType ?? "flex",
+        entryCost: plan.entryCost,
+        riskMode: "safe",
+      },
+    });
+    router.push("/slips");
+  };
 
   // Auto-scroll on new messages.
   useEffect(() => {
@@ -322,7 +347,7 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
       >
         <AnimatePresence initial={false}>
           {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+            <MessageBubble key={m.id} message={m} onViewSlips={handleViewSlips} />
           ))}
         </AnimatePresence>
         {thinking && (
@@ -361,7 +386,7 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, onViewSlips }: { message: Message; onViewSlips: (plan: PlanOption) => void }) {
   const isUser = message.role === "user";
   return (
     <motion.div
@@ -397,6 +422,7 @@ function MessageBubble({ message }: { message: Message }) {
                 key={p.label}
                 plan={p}
                 defaultExpanded={p.label === message.recommendedLabel}
+                onViewSlips={onViewSlips}
               />
             ))}
           </div>
@@ -406,7 +432,15 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-function PlanCard({ plan, defaultExpanded = false }: { plan: PlanOption; defaultExpanded?: boolean }) {
+function PlanCard({
+  plan,
+  defaultExpanded = false,
+  onViewSlips,
+}: {
+  plan: PlanOption;
+  defaultExpanded?: boolean;
+  onViewSlips: (plan: PlanOption) => void;
+}) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const ev = plan.expectedReturn - plan.totalStake;
   const evPos = ev >= 0;
@@ -426,9 +460,9 @@ function PlanCard({ plan, defaultExpanded = false }: { plan: PlanOption; default
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs text-white/50">If lands</div>
+          <div className="text-xs text-white/50">{plan.lineupCount > 1 ? "Per slip" : "If lands"}</div>
           <div className="text-base font-bold text-[#FFE600]">
-            ${plan.lineups.reduce((s, l) => s + l.grossPayout, 0).toFixed(0)}
+            ${plan.lineups[0]?.grossPayout.toFixed(0) ?? "0"}
           </div>
         </div>
         <div className="text-right">
@@ -471,6 +505,9 @@ function PlanCard({ plan, defaultExpanded = false }: { plan: PlanOption; default
                         <span className="text-white/50">{pp.prop.statType}</span>{" "}
                         <span className={pp.side === "more" ? "text-[#4ADE80]" : "text-[#FF6B35]"}>
                           {pp.side === "more" ? "Over" : "Under"} {pp.prop.line}
+                          {pp.prop.standardLine != null && (
+                            <span className="text-white/30"> (std {pp.prop.standardLine})</span>
+                          )}
                         </span>
                       </span>
                       <span className="font-mono text-white/40 shrink-0">
@@ -482,6 +519,15 @@ function PlanCard({ plan, defaultExpanded = false }: { plan: PlanOption; default
               </details>
             ))}
           </div>
+          {/* View on Slips button */}
+          <button
+            type="button"
+            onClick={() => onViewSlips(plan)}
+            className="w-full mt-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#7B2FFF]/20 border border-[#7B2FFF]/40 text-[#7B2FFF] text-xs font-bold uppercase tracking-widest hover:bg-[#7B2FFF]/30 transition"
+          >
+            View detailed metrics
+            <ArrowRight size={12} strokeWidth={3} />
+          </button>
         </div>
       )}
     </div>

@@ -259,6 +259,9 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
                 </div>
                 <div className="text-white/60 text-xs mt-1">
                   {p.prop.statType} {isMore ? ">" : "<"} {p.prop.line}
+                  {p.prop.standardLine != null && (
+                    <span className="text-white/30 ml-1">(std {p.prop.standardLine})</span>
+                  )}
                 </div>
                 <div
                   className="text-[10px] mt-1 font-bold"
@@ -400,6 +403,9 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
             <span className="text-white truncate font-bold">{p.prop.playerName}</span>
             <span className="text-white/40 flex-shrink-0">
               {p.prop.statType.slice(0, 4)} {p.prop.line}
+              {p.prop.standardLine != null && (
+                <span className="text-white/25"> (std {p.prop.standardLine})</span>
+              )}
             </span>
           </div>
         ))}
