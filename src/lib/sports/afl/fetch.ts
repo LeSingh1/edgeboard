@@ -1,32 +1,17 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-// ESPN AFL team numeric IDs (abbreviations like "adel", "bl" 400 on the
-// schedule endpoint — numeric IDs are stable).
 const AFL_TEAMS = [
-  "15", // Adelaide Crows
-  "11", // Brisbane Lions
-  "9",  // Carlton
-  "17", // Collingwood
-  "16", // Essendon
-  "1",  // Fremantle
-  "8",  // GWS Giants
-  "14", // Geelong Cats
-  "10", // Gold Coast Suns
-  "13", // Hawthorn
-  "2",  // Melbourne
-  "5",  // North Melbourne
-  "7",  // Port Adelaide
-  "12", // Richmond
-  "18", // St Kilda
-  "4",  // Sydney Swans
-  "3",  // West Coast Eagles
-  "6",  // Western Bulldogs
+  "15", "11", "9", "17", "16", "1", "8", "14", "10", "13",
+  "2", "5", "7", "12", "18", "4", "3", "6",
 ];
 
-export async function fetchTeamSchedule(teamAbbr: string, season: number): Promise<string[]> {
+// In-memory cache built during fetchPlayerRoster, consumed by fetchPlayerGamelog.
+const gamelogCache = new Map<string, RawGame[]>();
+
+export async function fetchTeamSchedule(teamId: string, season: number): Promise<string[]> {
   const ids = new Set<string>();
-  const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/teams/${teamAbbr}/schedule?season=${season}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/teams/${teamId}/schedule?season=${season}`;
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
@@ -36,63 +21,76 @@ export async function fetchTeamSchedule(teamAbbr: string, season: number): Promi
   return [...ids];
 }
 
-async function fetchBoxScorePlayers(eventId: string): Promise<PlayerRef[]> {
+interface BoxscorePlayer {
+  team?: { abbreviation?: string };
+  statistics?: Array<{
+    labels?: string[];
+    athletes?: Array<{
+      athlete?: { id?: string; displayName?: string };
+      stats?: string[];
+    }>;
+  }>;
+}
+
+async function fetchEventPlayerStats(eventId: string): Promise<{ players: PlayerRef[]; games: Map<string, RawGame> }> {
   const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/summary?event=${eventId}`;
+  const players: PlayerRef[] = [];
+  const games = new Map<string, RawGame>();
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
-    if (!res.ok) return [];
-    const body = await res.json() as { boxscore?: { players?: Array<{ team?: { abbreviation?: string }; statistics?: Array<{ athletes?: Array<{ athlete?: { id?: string; displayName?: string } }> }> }> } };
-    const out: PlayerRef[] = [];
+    if (!res.ok) return { players, games };
+    const body = await res.json() as {
+      boxscore?: { players?: BoxscorePlayer[] };
+      header?: { competitions?: Array<{ date?: string }> };
+    };
+    const gameDate = body.header?.competitions?.[0]?.date ?? "";
     for (const team of body.boxscore?.players ?? []) {
-      for (const stat of team.statistics ?? []) {
-        for (const a of stat.athletes ?? []) {
-          if (a.athlete?.id && a.athlete?.displayName) {
-            out.push({ id: a.athlete.id, name: a.athlete.displayName, team: team.team?.abbreviation });
+      for (const statGroup of team.statistics ?? []) {
+        const labels = statGroup.labels ?? [];
+        for (const a of statGroup.athletes ?? []) {
+          const id = a.athlete?.id;
+          const name = a.athlete?.displayName;
+          if (!id || !name) continue;
+          players.push({ id, name, team: team.team?.abbreviation });
+
+          const statsObj: Record<string, number | string | null> = {};
+          for (let i = 0; i < labels.length; i++) {
+            const v = a.stats?.[i];
+            if (v == null) continue;
+            const n = parseFloat(v);
+            statsObj[labels[i]] = Number.isFinite(n) ? n : v;
           }
+          games.set(id, { eventId, gameDate, stats: statsObj, isPlayoff: false });
         }
       }
     }
-    return out;
-  } catch { return []; }
+  } catch { /* skip */ }
+  return { players, games };
 }
 
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
+  gamelogCache.clear();
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
+
   for (const team of AFL_TEAMS) {
     const events = await fetchTeamSchedule(team, y);
-    for (const eventId of events.slice(0, 2)) {
-      for (const p of await fetchBoxScorePlayers(eventId)) {
+    for (const eventId of events.slice(0, 5)) {
+      const { players, games } = await fetchEventPlayerStats(eventId);
+      for (const p of players) {
         if (!seen.has(p.id)) seen.set(p.id, p);
+        const existing = gamelogCache.get(p.id) ?? [];
+        const game = games.get(p.id);
+        if (game) {
+          existing.push(game);
+          gamelogCache.set(p.id, existing);
+        }
       }
     }
   }
   return [...seen.values()];
 }
 
-export async function fetchPlayerGamelog(playerId: string, seasons: number[]): Promise<RawGame[]> {
-  const out: RawGame[] = [];
-  for (const season of seasons) {
-    const url = `https://site.web.api.espn.com/apis/common/v3/sports/australian-football/afl/athletes/${playerId}/gamelog?season=${season}`;
-    try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
-      if (!res.ok) continue;
-      const data = await res.json() as { labels?: string[]; seasonTypes?: Array<{ categories?: Array<{ events?: Array<{ eventId: string; stats: string[] }> }> }>; events?: Record<string, { gameDate?: string; atVs?: "@" | "vs"; opponent?: { abbreviation?: string } }> };
-      const labels = data.labels ?? [];
-      for (const st of data.seasonTypes ?? []) {
-        for (const cat of st.categories ?? []) {
-          for (const evt of cat.events ?? []) {
-            const statsObj: Record<string, number | string | null> = {};
-            for (let i = 0; i < labels.length; i++) {
-              const v = evt.stats[i]; const n = parseFloat(v); statsObj[labels[i]] = Number.isFinite(n) ? n : v;
-            }
-            const meta = data.events?.[evt.eventId];
-            out.push({ eventId: evt.eventId, gameDate: meta?.gameDate ?? "", stats: statsObj,
-              opponentAbbr: meta?.opponent?.abbreviation, atVs: meta?.atVs, isPlayoff: false });
-          }
-        }
-      }
-    } catch { /* skip */ }
-  }
-  return out;
+export async function fetchPlayerGamelog(playerId: string, _seasons: number[]): Promise<RawGame[]> {
+  return gamelogCache.get(playerId) ?? [];
 }

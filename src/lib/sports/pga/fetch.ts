@@ -2,55 +2,126 @@ import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+// In-memory cache built during fetchPlayerRoster, consumed by fetchPlayerGamelog.
+const gamelogCache = new Map<string, RawGame[]>();
+
 export async function fetchTeamSchedule(): Promise<string[]> {
-  // PGA has no team schedules — return empty.
   return [];
 }
 
-export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
-  // ESPN PGA rankings endpoint — top earners / world ranking
-  const y = new Date().getFullYear();
-  const url = `https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/rankings?season=${y}`;
+interface HoleScore {
+  value: number;
+  scoreType?: { displayValue?: string };
+}
+
+interface RoundData {
+  value: number; // total strokes
+  period: number;
+  linescores?: HoleScore[];
+  statistics?: { categories?: Array<{ stats?: Array<{ value?: number }> }> };
+}
+
+interface Competitor {
+  id?: string;
+  athlete?: { displayName?: string };
+  score?: number | string;
+  linescores?: RoundData[];
+  status?: { type?: { name?: string } };
+}
+
+function dateStringForWeeksAgo(weeksAgo: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - weeksAgo * 7);
+  return d.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+async function fetchTournamentWeek(dateStr: string): Promise<Array<{ eventId: string; eventName: string; competitors: Competitor[] }>> {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?dates=${dateStr}`;
   try {
     const res = await fetch(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
-    const body = await res.json() as { rankings?: Array<{ ranks?: Array<{ athlete?: { id?: string; displayName?: string } }> }> };
-    const out: PlayerRef[] = [];
-    const seen = new Set<string>();
-    for (const ranking of body.rankings ?? []) {
-      for (const rank of ranking.ranks ?? []) {
-        if (rank.athlete?.id && rank.athlete?.displayName && !seen.has(rank.athlete.id)) {
-          seen.add(rank.athlete.id);
-          out.push({ id: rank.athlete.id, name: rank.athlete.displayName });
-        }
+    const body = await res.json() as { events?: Array<{ id: string; name?: string; status?: { type?: { name?: string } }; competitions?: Array<{ competitors?: Competitor[] }> }> };
+    const out: Array<{ eventId: string; eventName: string; competitors: Competitor[] }> = [];
+    for (const e of body.events ?? []) {
+      if (e.status?.type?.name !== "STATUS_FINAL") continue;
+      for (const c of e.competitions ?? []) {
+        out.push({ eventId: e.id, eventName: e.name ?? "", competitors: c.competitors ?? [] });
       }
     }
     return out;
   } catch { return []; }
 }
 
-export async function fetchPlayerGamelog(playerId: string, seasons: number[]): Promise<RawGame[]> {
-  const out: RawGame[] = [];
-  for (const season of seasons) {
-    const url = `https://site.web.api.espn.com/apis/common/v3/sports/golf/pga/athletes/${playerId}/gamelog?season=${season}`;
-    try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
-      if (!res.ok) continue;
-      const data = await res.json() as { labels?: string[]; seasonTypes?: Array<{ categories?: Array<{ events?: Array<{ eventId: string; stats: string[] }> }> }>; events?: Record<string, { gameDate?: string }> };
-      const labels = data.labels ?? [];
-      for (const st of data.seasonTypes ?? []) {
-        for (const cat of st.categories ?? []) {
-          for (const evt of cat.events ?? []) {
-            const statsObj: Record<string, number | string | null> = {};
-            for (let i = 0; i < labels.length; i++) {
-              const v = evt.stats[i]; const n = parseFloat(v); statsObj[labels[i]] = Number.isFinite(n) ? n : v;
-            }
-            const meta = data.events?.[evt.eventId];
-            out.push({ eventId: evt.eventId, gameDate: meta?.gameDate ?? "", stats: statsObj, isPlayoff: false });
-          }
-        }
-      }
-    } catch { /* skip */ }
+function extractRoundGames(eventId: string, eventName: string, competitor: Competitor): RawGame[] {
+  const rounds = competitor.linescores ?? [];
+  const games: RawGame[] = [];
+  for (const rd of rounds) {
+    const strokes = rd.value;
+    if (!strokes || strokes <= 0) continue;
+
+    const holes = rd.linescores ?? [];
+    let birdies = 0, pars = 0, bogeys = 0, eagles = 0;
+    for (const h of holes) {
+      const st = h.scoreType?.displayValue ?? "";
+      if (st === "-1") birdies++;
+      else if (st === "E") pars++;
+      else if (st === "+1") bogeys++;
+      else if (st === "+2") bogeys++; // double bogey
+      else if (st === "-2") eagles++;
+      else if (st === "+3") bogeys++; // triple+
+      else if (st === "-3") eagles++; // albatross
+    }
+
+    // Per-round stats from the API: [birdies, bogeys, ?, ?, eagles, pars, teeTime]
+    const apiStats = rd.statistics?.categories?.[0]?.stats ?? [];
+    const apiBirdies = apiStats[0]?.value;
+    const apiPars = apiStats[5]?.value;
+
+    games.push({
+      eventId: `${eventId}-R${rd.period}`,
+      gameDate: eventName,
+      stats: {
+        STROKES: strokes,
+        BIRDIES: apiBirdies ?? birdies,
+        PARS: apiPars ?? pars,
+        BOGEYS: bogeys,
+        EAGLES: eagles,
+        BIRDIES_OR_BETTER: (apiBirdies ?? birdies) + eagles,
+        FH: holes.length,
+        GIR: null,
+        PUTTS: null,
+      },
+      isPlayoff: false,
+    });
   }
-  return out;
+  return games;
+}
+
+export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
+  gamelogCache.clear();
+  const seen = new Map<string, PlayerRef>();
+
+  // Fetch ~40 weeks of tournaments (roughly one PGA season)
+  for (let w = 0; w < 40; w++) {
+    const dateStr = dateStringForWeeksAgo(w);
+    const tournaments = await fetchTournamentWeek(dateStr);
+    for (const { eventId, eventName, competitors } of tournaments) {
+      for (const comp of competitors) {
+        const id = comp.id;
+        const name = comp.athlete?.displayName;
+        if (!id || !name) continue;
+        if (!seen.has(id)) seen.set(id, { id, name });
+
+        const roundGames = extractRoundGames(eventId, eventName, comp);
+        const existing = gamelogCache.get(id) ?? [];
+        existing.push(...roundGames);
+        gamelogCache.set(id, existing);
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+export async function fetchPlayerGamelog(playerId: string, _seasons: number[]): Promise<RawGame[]> {
+  return gamelogCache.get(playerId) ?? [];
 }

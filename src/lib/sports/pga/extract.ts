@@ -4,23 +4,15 @@ function n(g: RawGame, k: string): number | null {
   if (typeof v === "string") { const f = parseFloat(v); return Number.isFinite(f) ? f : null; }
   return null;
 }
-const MAP: Record<string, string> = {
-  "Strokes": "STROKES",
-  "Birdies": "BIRDIES",
-  "Pars": "PARS",
-  "Bogeys": "BOGEYS",
-  "Eagles": "EAGLES",
-  "Fairways Hit": "FH",
-  "Greens in Regulation": "GIR",
-  "Greens In Regulation": "GIR",
-  "Putts": "PUTTS",
-};
 export function pgaExtractStat(game: RawGame, statType: string): number | null {
-  if (statType === "Birdies Or Better" || statType === "Birdies or Better Matchup") {
-    const b = n(game, "BIRDIES"), e = n(game, "EAGLES");
-    if (b == null && e == null) return null;
-    return (b ?? 0) + (e ?? 0);
-  }
-  const k = MAP[statType];
-  return k ? n(game, k) : null;
+  if (statType === "Strokes") return n(game, "STROKES");
+  if (statType === "Birdies") return n(game, "BIRDIES");
+  if (statType === "Pars") return n(game, "PARS");
+  if (statType === "Bogeys") return n(game, "BOGEYS");
+  if (statType === "Eagles") return n(game, "EAGLES");
+  if (statType === "Birdies Or Better" || statType === "Birdies or Better Matchup") return n(game, "BIRDIES_OR_BETTER");
+  if (statType === "Fairways Hit") return n(game, "FH");
+  if (statType === "Greens in Regulation" || statType === "Greens In Regulation") return n(game, "GIR");
+  if (statType === "Putts") return n(game, "PUTTS");
+  return null;
 }

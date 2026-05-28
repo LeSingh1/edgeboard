@@ -167,6 +167,16 @@ export async function runSport(
       }
     }
 
+    if (scoredPicks.length === 0) {
+      return {
+        sport: adapter.leagues[0],
+        status: "failed",
+        sampleSize: 0,
+        durationMs: Date.now() - t0,
+        error: "Zero training samples — data source may be unavailable",
+      };
+    }
+
     await checkpoint("calibrate", 0.85);
     const calibration = fitSportCalibration(scoredPicks, {
       minBucketSize: opts.minBucketSize,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { pgaExtractStat } from "./extract";
 import type { RawGame } from "@/lib/sports/types";
 
-const round: RawGame = { eventId: "e", gameDate: "2026-04-10", stats: { STROKES: 68, BIRDIES: 5, PARS: 11, BOGEYS: 2, EAGLES: 0, FH: 9, GIR: 14, PUTTS: 28 } };
+const round: RawGame = { eventId: "e", gameDate: "2026-04-10", stats: { STROKES: 68, BIRDIES: 5, PARS: 11, BOGEYS: 2, EAGLES: 0, BIRDIES_OR_BETTER: 5, FH: 9, GIR: 14, PUTTS: 28 } };
 
 describe("pgaExtractStat", () => {
   it("basic stats", () => {

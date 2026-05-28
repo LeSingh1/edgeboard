@@ -2,70 +2,99 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const TOURS = ["atp", "wta"] as const;
+
+const gamelogCache = new Map<string, RawGame[]>();
+const rosterCache = new Map<string, PlayerRef>();
 
 export async function fetchTeamSchedule(): Promise<string[]> {
-  // Tennis has no team schedules — player-centric. Return empty.
   return [];
 }
 
-async function fetchTourRankings(tour: string, year: number): Promise<PlayerRef[]> {
-  // ESPN tennis rankings endpoint gives top-100 athletes
-  const url = `https://site.web.api.espn.com/apis/site/v2/sports/tennis/${tour}/rankings?season=${year}`;
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
-    if (!res.ok) return [];
-    const body = await res.json() as { rankings?: Array<{ ranks?: Array<{ athlete?: { id?: string; displayName?: string } }> }> };
-    const out: PlayerRef[] = [];
-    for (const ranking of body.rankings ?? []) {
-      for (const rank of ranking.ranks ?? []) {
-        if (rank.athlete?.id && rank.athlete?.displayName) {
-          out.push({ id: rank.athlete.id, name: rank.athlete.displayName });
-        }
-      }
-    }
-    return out;
-  } catch { return []; }
+interface Linescore { value: number; }
+
+interface CompetitorData {
+  id?: string;
+  winner?: boolean;
+  athlete?: { displayName?: string };
+  linescores?: Linescore[];
 }
 
-export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
-  const seen = new Map<string, PlayerRef>();
-  const y = new Date().getFullYear();
-  for (const tour of TOURS) {
-    for (const p of await fetchTourRankings(tour, y)) {
-      if (!seen.has(p.id)) seen.set(p.id, p);
-    }
+interface Competition {
+  id?: string;
+  date?: string;
+  status?: { type?: { completed?: boolean } };
+  competitors?: CompetitorData[];
+}
+
+function dateStringForWeeksAgo(weeksAgo: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - weeksAgo * 7);
+  return d.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+function extractMatchStats(
+  player: CompetitorData,
+  opponent: CompetitorData,
+): Record<string, number | string | null> {
+  const playerSets = player.linescores ?? [];
+  const opponentSets = opponent.linescores ?? [];
+  let setsWon = 0, gamesWon = 0, totalGames = 0;
+  for (let i = 0; i < playerSets.length; i++) {
+    const pg = playerSets[i]?.value ?? 0;
+    const og = opponentSets[i]?.value ?? 0;
+    gamesWon += pg;
+    totalGames += pg + og;
+    if (pg > og) setsWon++;
   }
-  return [...seen.values()];
+  return { SETS: setsWon, GW: gamesWon, TOTAL_GAMES: totalGames };
 }
 
-export async function fetchPlayerGamelog(playerId: string, seasons: number[]): Promise<RawGame[]> {
-  const out: RawGame[] = [];
-  for (const season of seasons) {
-    for (const tour of TOURS) {
-      const url = `https://site.web.api.espn.com/apis/common/v3/sports/tennis/${tour}/athletes/${playerId}/gamelog?season=${season}`;
-      try {
-        const res = await fetch(url, { headers: { "User-Agent": UA } });
-        if (!res.ok) continue;
-        const data = await res.json() as { labels?: string[]; seasonTypes?: Array<{ categories?: Array<{ events?: Array<{ eventId: string; stats: string[] }> }> }>; events?: Record<string, { gameDate?: string; atVs?: "@" | "vs"; opponent?: { abbreviation?: string } }> };
-        const labels = data.labels ?? [];
-        for (const st of data.seasonTypes ?? []) {
-          for (const cat of st.categories ?? []) {
-            for (const evt of cat.events ?? []) {
-              const statsObj: Record<string, number | string | null> = {};
-              for (let i = 0; i < labels.length; i++) {
-                const v = evt.stats[i]; const n = parseFloat(v); statsObj[labels[i]] = Number.isFinite(n) ? n : v;
-              }
-              const meta = data.events?.[evt.eventId];
-              out.push({ eventId: evt.eventId, gameDate: meta?.gameDate ?? "", stats: statsObj,
-                opponentAbbr: meta?.opponent?.abbreviation, atVs: meta?.atVs, isPlayoff: false });
+async function ingestWeek(dateStr: string): Promise<void> {
+  for (const tour of ["atp", "wta"] as const) {
+    const url = `https://site.api.espn.com/apis/site/v2/sports/tennis/${tour}/scoreboard?dates=${dateStr}`;
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      if (!res.ok) continue;
+      const body = await res.json() as {
+        events?: Array<{ groupings?: Array<{ competitions?: Competition[] }> }>;
+      };
+      for (const e of body.events ?? []) {
+        for (const g of e.groupings ?? []) {
+          for (const c of g.competitions ?? []) {
+            if (!c.status?.type?.completed) continue;
+            const comps = c.competitors ?? [];
+            if (comps.length !== 2) continue;
+            for (let pi = 0; pi < 2; pi++) {
+              const player = comps[pi], opponent = comps[1 - pi];
+              const id = player.id, name = player.athlete?.displayName;
+              if (!id || !name) continue;
+              if (!rosterCache.has(id)) rosterCache.set(id, { id, name });
+              const game: RawGame = {
+                eventId: c.id ?? "",
+                gameDate: c.date ?? "",
+                stats: extractMatchStats(player, opponent),
+                isPlayoff: false,
+              };
+              const existing = gamelogCache.get(id) ?? [];
+              existing.push(game);
+              gamelogCache.set(id, existing);
             }
           }
         }
-        // Player found in this tour — stop trying the other one
-        if (out.length > 0) break;
-      } catch { /* skip */ }
-    }
+      }
+    } catch { /* skip */ }
   }
-  return out;
+}
+
+export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
+  gamelogCache.clear();
+  rosterCache.clear();
+  for (let w = 0; w < 40; w++) {
+    await ingestWeek(dateStringForWeeksAgo(w));
+  }
+  return [...rosterCache.values()];
+}
+
+export async function fetchPlayerGamelog(playerId: string, _seasons: number[]): Promise<RawGame[]> {
+  return gamelogCache.get(playerId) ?? [];
 }

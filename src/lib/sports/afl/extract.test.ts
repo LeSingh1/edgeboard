@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { aflExtractStat } from "./extract";
 import type { RawGame } from "@/lib/sports/types";
 
-const game: RawGame = { eventId: "e", gameDate: "2026-04-10", stats: { D: 24, K: 14, HB: 10, M: 7, T: 3, G: 2, B: 1 } };
+const game: RawGame = { eventId: "e", gameDate: "2026-04-10", stats: { D: 24, K: 14, H: 10, M: 7, T: 3, G: 2, B: 1, SI: 5 } };
 
 describe("aflExtractStat", () => {
   it("basic stats", () => {

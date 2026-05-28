@@ -7,17 +7,14 @@ function n(g: RawGame, k: string): number | null {
 const MAP: Record<string, string> = {
   "Disposals": "D",
   "Kicks": "K",
-  "Handballs": "HB",
+  "Handballs": "H",
   "Marks": "M",
   "Tackles": "T",
   "Goals": "G",
   "Behinds": "B",
 };
 export function aflExtractStat(game: RawGame, statType: string): number | null {
-  if (statType === "Score Involvements") {
-    const g = n(game, "G"), b = n(game, "B");
-    return g != null && b != null ? g * 6 + b : null;  // standard AFL score formula
-  }
+  if (statType === "Score Involvements") return n(game, "SI");
   const k = MAP[statType];
   return k ? n(game, k) : null;
 }
