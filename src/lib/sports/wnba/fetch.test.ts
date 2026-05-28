@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { trainingSeasons } from "./index";
 
 describe("WNBA training seasons", () => {
-  it("returns a four-year window (short 40-game season needs depth)", () => {
+  it("returns a ten-year window (max historical depth per player)", () => {
     const seasons = trainingSeasons();
-    assert.equal(seasons.length, 4);
+    assert.equal(seasons.length, 10);
     const y = new Date().getFullYear();
-    assert.deepEqual(seasons, [y - 3, y - 2, y - 1, y]);
+    assert.deepEqual(seasons, Array.from({ length: 10 }, (_, i) => y - 9 + i));
   });
 });

@@ -5,7 +5,7 @@ import { nflExtractStat } from "./extract";
 export const nflAdapter: SportAdapter = {
   leagues: ["NFL", "NFLSZN"],
   displayName: "NFL",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y - 3, y - 2, y - 1, y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: [
     "Pass Yards", "Pass Completions", "Pass Attempts", "Pass TDs", "INT",
     "Receptions", "Rec Yards", "Rec TDs",

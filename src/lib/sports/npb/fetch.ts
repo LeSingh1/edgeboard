@@ -7,7 +7,7 @@ import type { PlayerRef, RawGame } from "@/lib/sports/types";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const BASE = "https://npb.jp";
 const MONTHS = ["03", "04", "05", "06", "07", "08", "09", "10"];
-const MAX_GAMES = 400;
+const MAX_GAMES = 4000;
 
 const gamelogCache = new Map<string, RawGame[]>();
 
@@ -64,7 +64,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   let games = 0;
 
   outer:
-  for (const season of [y - 1, y]) {
+  for (const season of Array.from({ length: 10 }, (_, i) => y - 9 + i)) {
     for (const month of MONTHS) {
       const paths = await boxPathsForMonth(season, month);
       for (const path of paths) {

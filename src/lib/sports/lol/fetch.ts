@@ -7,7 +7,7 @@ import type { PlayerRef, RawGame } from "@/lib/sports/types";
 const UA = "edgeboard-training/0.1 (contact: sshaurya914@gmail.com)";
 const API = "https://lol.fandom.com/api.php";
 const PAGE = 500;        // Cargo hard max per request
-const MAX_PAGES = 24;    // up to ~12k recent scoreboard rows
+const MAX_PAGES = 120;   // up to ~60k scoreboard rows (≈ ten years of play)
 
 interface CargoRow {
   title: {

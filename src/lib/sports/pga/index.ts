@@ -4,7 +4,7 @@ import { pgaExtractStat } from "./extract";
 export const pgaAdapter: SportAdapter = {
   leagues: ["PGA"],
   displayName: "PGA",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y - 1, y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: ["Strokes","Birdies","Pars","Bogeys","Eagles","Birdies Or Better","Birdies or Better Matchup","Fairways Hit","Greens in Regulation","Greens In Regulation","Putts"],
   fetchPlayerRoster, fetchPlayerGamelog, fetchTeamSchedule,
   extractStat: pgaExtractStat,

@@ -4,8 +4,9 @@ import { fetchPlayerRoster, fetchPlayerGamelog, fetchTeamSchedule } from "./fetc
 import type { Prop } from "@/lib/types";
 
 export function trainingSeasons(): number[] {
+  // Past 10 seasons of each current player's game logs.
   const y = new Date().getFullYear();
-  return [y - 3, y - 2, y - 1, y];   // WNBA: short 40-game season → pull four years
+  return Array.from({ length: 10 }, (_, i) => y - 9 + i);
 }
 
 const SUPPORTED_STATS = [

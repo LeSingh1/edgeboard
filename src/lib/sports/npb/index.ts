@@ -5,7 +5,7 @@ import { npbExtractStat } from "./extract";
 export const npbAdapter: SportAdapter = {
   leagues: ["NPB"],
   displayName: "NPB",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y - 1, y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: ["Hits", "Runs", "RBIs", "Stolen Bases", "At Bats", "Hits+Runs+RBIs"],
   fetchPlayerRoster,
   fetchPlayerGamelog,

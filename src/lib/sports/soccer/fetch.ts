@@ -100,7 +100,9 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
 
   // Bounded aggressively: caps kept finite because every event is two
   // sequential ESPN calls — fully uncapping invites rate-limiting.
-  for (const season of [y, y - 1, y - 2]) {
+  // Past 10 seasons for maximum historical depth per player.
+  const seasons = Array.from({ length: 10 }, (_, i) => y - i);
+  for (const season of seasons) {
     for (const competition of COMPETITIONS) {
       const teams = await fetchTeamsInCompetition(competition);
       for (const team of teams.slice(0, 25)) {
@@ -130,7 +132,9 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
         }
       }
     }
-    if (seen.size > 1000) break;
+    // Raised so the crawl keeps traversing older seasons instead of stopping
+    // after the first; the per-team/per-event slices still bound total calls.
+    if (seen.size > 8000) break;
   }
   return [...seen.values()];
 }

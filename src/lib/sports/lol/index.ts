@@ -5,7 +5,7 @@ import { lolExtractStat } from "./extract";
 export const lolAdapter: SportAdapter = {
   leagues: ["LOL"],
   displayName: "LoL",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: ["Kills", "Deaths", "Assists", "CS", "Kills+Assists"],
   fetchPlayerRoster,
   fetchPlayerGamelog,

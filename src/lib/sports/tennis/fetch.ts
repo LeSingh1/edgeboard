@@ -89,7 +89,8 @@ async function ingestWeek(dateStr: string): Promise<void> {
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   gamelogCache.clear();
   rosterCache.clear();
-  for (let w = 0; w < 160; w++) {
+  // ~520 weeks ≈ ten seasons of match history.
+  for (let w = 0; w < 520; w++) {
     await ingestWeek(dateStringForWeeksAgo(w));
   }
   return [...rosterCache.values()];

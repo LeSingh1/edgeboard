@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>                <string>com.edgeboard.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <string>export NVM_DIR="$HOME/.nvm" &amp;&amp; [ -s "$NVM_DIR/nvm.sh" ] &amp;&amp; . "$NVM_DIR/nvm.sh" &amp;&amp; cd PROJECT_DIR &amp;&amp; npx tsx scripts/watchdog-check.ts &gt;&gt; data/training/meta/watchdog.log 2&gt;&amp;1</string>
+  </array>
+  <key>StartInterval</key>         <integer>1800</integer>
+  <key>RunAtLoad</key>             <true/>
+  <key>KeepAlive</key>             <false/>
+  <key>StandardOutPath</key>       <string>PROJECT_DIR/data/training/meta/watchdog-stdout.log</string>
+  <key>StandardErrorPath</key>     <string>PROJECT_DIR/data/training/meta/watchdog-stderr.log</string>
+</dict>
+</plist>

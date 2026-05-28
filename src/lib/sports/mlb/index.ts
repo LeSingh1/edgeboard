@@ -14,7 +14,7 @@ const SUPPORTED_STATS = [
 export const mlbAdapter: SportAdapter = {
   leagues: ["MLB", "MLBLIVE"],
   displayName: "MLB",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y - 3, y - 2, y - 1, y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: SUPPORTED_STATS,
   fetchPlayerRoster,
   fetchPlayerGamelog,

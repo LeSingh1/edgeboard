@@ -5,7 +5,7 @@ import { nhlExtractStat } from "./extract";
 export const nhlAdapter: SportAdapter = {
   leagues: ["NHL", "NHL1P"],
   displayName: "NHL",
-  trainingSeasons: () => { const y = new Date().getFullYear(); return [y - 3, y - 2, y - 1, y]; },
+  trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: ["Goals","Assists","Points","Shots","SOG","Hits","Blocks","Goalie Saves","Saves","Goals Allowed","Save Percentage"],
   fetchPlayerRoster, fetchPlayerGamelog, fetchTeamSchedule,
   extractStat: nhlExtractStat,

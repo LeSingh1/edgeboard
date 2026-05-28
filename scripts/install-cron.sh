@@ -3,22 +3,32 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLIST_SRC="$PROJECT_DIR/scripts/com.edgeboard.train.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.edgeboard.train.plist"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$PROJECT_DIR/data/training/meta"
 
-# Substitute PROJECT_DIR placeholder. Escape any "/" in PROJECT_DIR so sed doesn't trip on them.
+# Escape any "/" in PROJECT_DIR so sed doesn't trip on them.
 ESC="${PROJECT_DIR//\//\\/}"
-sed "s/PROJECT_DIR/$ESC/g" "$PLIST_SRC" > "$PLIST_DST"
 
-# Bootstrap into launchd (replaces existing if loaded).
-# Note: `launchctl bootstrap` is the modern path-based load command (replaces the
-# deprecated `launchctl load`). If you are on an older macOS where bootstrap is
-# unavailable, fall back to: launchctl load -w "$PLIST_DST"
-launchctl bootout "gui/$(id -u)/com.edgeboard.train" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_DST"
+# Install one agent: substitute the PROJECT_DIR placeholder, then (re)bootstrap.
+# `launchctl bootstrap` is the modern path-based load command (replaces the
+# deprecated `launchctl load`). On older macOS, fall back to:
+#   launchctl load -w "$DST"
+install_agent() {
+  local label="$1"
+  local src="$PROJECT_DIR/scripts/$label.plist"
+  local dst="$HOME/Library/LaunchAgents/$label.plist"
+  sed "s/PROJECT_DIR/$ESC/g" "$src" > "$dst"
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$dst"
+  echo "Installed $label"
+}
 
-echo "Installed. Next fire: 3:15 AM. Verify with: launchctl list | grep edgeboard"
-echo "Manually trigger: launchctl kickstart gui/\$(id -u)/com.edgeboard.train"
+# Nightly retrain + post-train model check (3:15 AM).
+install_agent "com.edgeboard.train"
+# 24/7 watchdog: health check every 30 minutes.
+install_agent "com.edgeboard.watchdog"
+
+echo "Done. Verify with: launchctl list | grep edgeboard"
+echo "Manual retrain:  launchctl kickstart gui/\$(id -u)/com.edgeboard.train"
+echo "Manual watchdog: launchctl kickstart gui/\$(id -u)/com.edgeboard.watchdog"
