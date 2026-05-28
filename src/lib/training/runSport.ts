@@ -26,10 +26,11 @@
  */
 
 import { join } from "node:path";
-import type { SportAdapter, RawGame, SportArtifacts } from "@/lib/sports/types";
+import type { SportAdapter, RawGame, SportArtifacts, CalibrationTable, TestMetrics } from "@/lib/sports/types";
 import type { ScoredPick } from "@/lib/backtest/aggregate";
 import type { ScoreOutput } from "@/lib/backtest/scoreModel";
 import { fitSportCalibration } from "./fitSportCalibration";
+import { applyCalibrationModel, type CalibrationModel } from "@/lib/backtest/fitCalibration";
 import { deploySportArtifacts } from "./deployArtifacts";
 import { writeProgress } from "./watchdog";
 
@@ -52,6 +53,72 @@ export interface RunSportResult {
   sampleSize: number;
   durationMs: number;
   error?: string;
+  /** Held-out test metrics, when a test split was produced. */
+  testMetrics?: TestMetrics;
+}
+
+/**
+ * Evaluate a fitted calibration table against a held-out test set.
+ *
+ * The calibration table stores each bucket as parallel `x`/`y` arrays
+ * (isotonic breakpoints). We reconstruct a `CalibrationModel` per bucket,
+ * route each test pick by its `${stat}|${oddsType}` key, and score the
+ * calibrated probability against the actual `hit`.
+ *
+ * Reports two log-losses so the artifact records whether calibration
+ * actually helped: `logLoss` uses the calibrated probability,
+ * `baselineLogLoss` uses the raw `predictedPMore`. If calibration is
+ * working, `logLoss < baselineLogLoss`.
+ *
+ * Picks whose bucket has no fitted curve (dropped below minBucketSize)
+ * are skipped — they have no calibrated counterpart to evaluate.
+ */
+function evaluateTestSet(
+  testPicks: ScoredPick[],
+  table: CalibrationTable,
+): TestMetrics {
+  const EPS = 1e-6;
+  const clampP = (p: number) => Math.min(1 - EPS, Math.max(EPS, p));
+  // Reconstruct a CalibrationModel per bucket key from the x/y arrays.
+  const models = new Map<string, CalibrationModel>();
+  for (const [key, b] of Object.entries(table.buckets)) {
+    models.set(key, {
+      fittedAt: "",
+      trainingSize: b.sampleSize,
+      breakpoints: b.x.map((xi, i) => ({ predicted: xi, corrected: b.y[i] })),
+    });
+  }
+
+  let n = 0;
+  let logLoss = 0;
+  let baselineLogLoss = 0;
+  let brier = 0;
+  let correct = 0;
+  const bucketsSeen = new Set<string>();
+
+  for (const p of testPicks) {
+    const key = `${p.stat}|${p.oddsType}`;
+    const model = models.get(key);
+    if (!model) continue; // no calibrated curve for this bucket
+    bucketsSeen.add(key);
+    const y = p.hit ? 1 : 0;
+    const calibrated = clampP(applyCalibrationModel(model, p.predictedPMore));
+    const raw = clampP(p.predictedPMore);
+    logLoss += -(y * Math.log(calibrated) + (1 - y) * Math.log(1 - calibrated));
+    baselineLogLoss += -(y * Math.log(raw) + (1 - y) * Math.log(1 - raw));
+    brier += (calibrated - y) ** 2;
+    if ((calibrated >= 0.5 ? 1 : 0) === y) correct++;
+    n++;
+  }
+
+  return {
+    sampleSize: n,
+    bucketsEvaluated: bucketsSeen.size,
+    logLoss: n > 0 ? logLoss / n : 0,
+    baselineLogLoss: n > 0 ? baselineLogLoss / n : 0,
+    brier: n > 0 ? brier / n : 0,
+    accuracy: n > 0 ? correct / n : 0,
+  };
 }
 
 interface RunSportOpts {
@@ -98,7 +165,14 @@ export async function runSport(
     }
 
     await checkpoint("score", 0.75);
-    const scoredPicks: ScoredPick[] = [];
+    // Chronological train/test split. Per player+stat, the earliest 80% of
+    // walk-forward games feed `trainPicks` (used to fit calibration) and the
+    // most recent 20% feed `testPicks` (held out for honest evaluation).
+    // Splitting per-player keeps each player represented in both sets and
+    // mirrors deployment: we always predict the future from the past.
+    const trainPicks: ScoredPick[] = [];
+    const testPicks: ScoredPick[] = [];
+    const TEST_FRACTION = 0.2;
     // Candidate-line offsets in standard deviations around the rolling mean.
     // Spread chosen so predictedPMore lands roughly across [0.05, 0.95].
     const SIGMA_OFFSETS = [-2, -1, -0.5, 0, 0.5, 1, 2];
@@ -120,6 +194,11 @@ export async function runSport(
           if (v != null && Number.isFinite(v)) values.push(v);
         }
         if (values.length < WARMUP + 1) continue;
+
+        // Index that divides train (earlier games) from test (latest games).
+        // cutoff counts from WARMUP since that's the first predictable game.
+        const cutoff =
+          WARMUP + Math.floor((values.length - WARMUP) * (1 - TEST_FRACTION));
 
         // Walk-forward: for each game i ≥ WARMUP, compute rolling mean/std
         // from [0..i-1] (strictly past), then sample a grid of candidate
@@ -152,7 +231,7 @@ export async function runSport(
               sigma,
               sampleSize: past.length,
             };
-            scoredPicks.push({
+            const pick: ScoredPick = {
               stat,
               oddsType: "standard",
               side: "more",
@@ -161,13 +240,15 @@ export async function runSport(
               line,
               actualValue,
               score: stubScore,
-            });
+            };
+            (i < cutoff ? trainPicks : testPicks).push(pick);
           }
         }
       }
     }
 
-    if (scoredPicks.length === 0) {
+    const totalPicks = trainPicks.length + testPicks.length;
+    if (trainPicks.length === 0) {
       return {
         sport: adapter.leagues[0],
         status: "failed",
@@ -178,9 +259,14 @@ export async function runSport(
     }
 
     await checkpoint("calibrate", 0.85);
-    const calibration = fitSportCalibration(scoredPicks, {
+    // Fit calibration on the training split only — the test split must stay
+    // unseen for its metrics to mean anything.
+    const calibration = fitSportCalibration(trainPicks, {
       minBucketSize: opts.minBucketSize,
     });
+
+    // Evaluate the held-out test split against the fitted curves.
+    const testMetrics = evaluateTestSet(testPicks, calibration);
 
     await checkpoint("deploy", 0.95);
     const artifacts: SportArtifacts = {
@@ -190,8 +276,11 @@ export async function runSport(
       gameScriptProfile: null,
       metadata: {
         trainedAt: new Date().toISOString(),
-        sampleSize: scoredPicks.length,
-        version: "training-v1",
+        sampleSize: totalPicks,
+        version: "training-v2",
+        trainSampleSize: trainPicks.length,
+        testSampleSize: testPicks.length,
+        testMetrics,
       },
     };
     await deploySportArtifacts({
@@ -204,8 +293,9 @@ export async function runSport(
     return {
       sport: adapter.leagues[0],
       status: "ok",
-      sampleSize: scoredPicks.length,
+      sampleSize: totalPicks,
       durationMs: Date.now() - t0,
+      testMetrics,
     };
   } catch (e) {
     return {

@@ -52,6 +52,25 @@ export interface GameScriptProfile {
   byTeam: Record<string, { pace: number; offensiveShift: number }>;
 }
 
+/** Held-out evaluation metrics computed on the test split (the most recent
+ *  ~20% of each player's games, never seen by the calibrator). Lower
+ *  `logLoss`/`brier` are better; if calibration helps, `logLoss` should beat
+ *  `baselineLogLoss` (the raw uncalibrated probabilities). */
+export interface TestMetrics {
+  /** Number of test picks actually scored (those with a fitted bucket). */
+  sampleSize: number;
+  /** Distinct `${stat}|${oddsType}` buckets represented in the test set. */
+  bucketsEvaluated: number;
+  /** Mean log-loss using calibrated probabilities. */
+  logLoss: number;
+  /** Mean log-loss using raw (uncalibrated) probabilities, for comparison. */
+  baselineLogLoss: number;
+  /** Mean Brier score of the calibrated probabilities. */
+  brier: number;
+  /** Fraction of picks where the calibrated p≥0.5 decision matched the outcome. */
+  accuracy: number;
+}
+
 export interface SportArtifacts {
   calibration: CalibrationTable | null;
   defenseRatings: DefenseRatings | null;
@@ -59,10 +78,17 @@ export interface SportArtifacts {
   gameScriptProfile: GameScriptProfile | null;
   metadata: {
     trainedAt: string;
+    /** Total picks generated (train + test). */
     sampleSize: number;
     /** Format: `"{sport}-{source}-v{N}"` with optional suffixes for variants.
      *  e.g. `"wnba-espn-v1+iso"`. */
     version: string;
+    /** Picks in the training split (fed to the calibrator). */
+    trainSampleSize?: number;
+    /** Picks held out for evaluation. */
+    testSampleSize?: number;
+    /** Held-out test-set evaluation metrics. */
+    testMetrics?: TestMetrics;
   };
 }
 

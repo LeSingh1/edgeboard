@@ -57,6 +57,31 @@ describe("runSport", () => {
     );
   });
 
+  it("produces a held-out test split with evaluation metrics", async () => {
+    const result = await runSport(mockAdapter, { rootDir: root, minBucketSize: 100 });
+    assert.equal(result.status, "ok");
+    const m = result.testMetrics;
+    assert.ok(m, "expected testMetrics on result");
+    // Chronological 80/20 split: both sides non-empty, summing to sampleSize.
+    assert.ok(m.sampleSize > 0, "expected non-empty test set");
+    assert.ok(m.bucketsEvaluated > 0, "expected at least one evaluated bucket");
+    // Probabilities are clamped, so log-losses are finite and non-negative.
+    assert.ok(Number.isFinite(m.logLoss) && m.logLoss >= 0);
+    assert.ok(Number.isFinite(m.baselineLogLoss) && m.baselineLogLoss >= 0);
+    assert.ok(m.accuracy >= 0 && m.accuracy <= 1);
+
+    // Persisted metadata carries the split sizes + metrics.
+    const { readFile } = await import("node:fs/promises");
+    const meta = JSON.parse(
+      await readFile(join(root, "artifacts", "mock", "metadata.json"), "utf8"),
+    );
+    assert.equal(meta.version, "training-v2");
+    assert.ok(meta.trainSampleSize > 0);
+    assert.ok(meta.testSampleSize > 0);
+    assert.equal(meta.trainSampleSize + meta.testSampleSize, meta.sampleSize);
+    assert.ok(meta.testMetrics);
+  });
+
   it("returns failed status when an adapter throws", async () => {
     const badAdapter = {
       ...mockAdapter,
