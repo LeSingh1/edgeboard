@@ -8,7 +8,7 @@
     <string>/usr/bin/env</string>
     <string>bash</string>
     <string>-lc</string>
-    <string>export NVM_DIR="$HOME/.nvm" &amp;&amp; [ -s "$NVM_DIR/nvm.sh" ] &amp;&amp; . "$NVM_DIR/nvm.sh" &amp;&amp; cd PROJECT_DIR &amp;&amp; npx tsx scripts/train-all.ts &gt;&gt; data/training/meta/launchd.log 2&gt;&amp;1</string>
+    <string>export NVM_DIR="$HOME/.nvm" &amp;&amp; [ -s "$NVM_DIR/nvm.sh" ] &amp;&amp; . "$NVM_DIR/nvm.sh" &amp;&amp; cd PROJECT_DIR &amp;&amp; npx tsx scripts/train-all.ts &gt;&gt; data/training/meta/launchd.log 2&gt;&amp;1; npx tsx scripts/check-models.ts &gt;&gt; data/training/meta/launchd.log 2&gt;&amp;1</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
