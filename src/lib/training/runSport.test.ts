@@ -36,6 +36,27 @@ describe("runSport", () => {
     assert.ok(result.sampleSize > 0);
   });
 
+  it("produces calibration with spread predictedPMore (not all 0.5)", async () => {
+    const result = await runSport(mockAdapter, { rootDir: root, minBucketSize: 100 });
+    assert.equal(result.status, "ok");
+
+    // Read the deployed calibration file
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const cal = JSON.parse(
+      await readFile(join(root, "artifacts", "mock", "calibration.json"), "utf8"),
+    );
+    const bucket = cal.buckets["Points|standard"];
+    assert.ok(bucket, "expected Points|standard bucket");
+    // x values must span more than just 0.5 — find min and max
+    const minX = Math.min(...bucket.x);
+    const maxX = Math.max(...bucket.x);
+    assert.ok(
+      maxX - minX > 0.3,
+      `expected spread > 0.3 in calibration x-values, got [${minX}, ${maxX}]`,
+    );
+  });
+
   it("returns failed status when an adapter throws", async () => {
     const badAdapter = {
       ...mockAdapter,
