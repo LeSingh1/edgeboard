@@ -73,17 +73,19 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
 
-  for (const team of AFL_TEAMS) {
-    const events = await fetchTeamSchedule(team, y);
-    for (const eventId of events.slice(0, 5)) {
-      const { players, games } = await fetchEventPlayerStats(eventId);
-      for (const p of players) {
-        if (!seen.has(p.id)) seen.set(p.id, p);
-        const existing = gamelogCache.get(p.id) ?? [];
-        const game = games.get(p.id);
-        if (game) {
-          existing.push(game);
-          gamelogCache.set(p.id, existing);
+  for (const season of [y, y - 1, y - 2, y - 3]) {
+    for (const team of AFL_TEAMS) {
+      const events = await fetchTeamSchedule(team, season);
+      for (const eventId of events.slice(0, 30)) {
+        const { players, games } = await fetchEventPlayerStats(eventId);
+        for (const p of players) {
+          if (!seen.has(p.id)) seen.set(p.id, p);
+          const existing = gamelogCache.get(p.id) ?? [];
+          const game = games.get(p.id);
+          if (game) {
+            existing.push(game);
+            gamelogCache.set(p.id, existing);
+          }
         }
       }
     }

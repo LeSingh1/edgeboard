@@ -42,7 +42,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   for (const team of NBA_TEAMS) {
     const events = await fetchTeamSchedule(team, 2026);
-    for (const eventId of events.slice(0, 3)) {
+    for (const eventId of events.slice(0, 8)) {
       for (const p of await fetchBoxScorePlayers(eventId)) {
         if (!seen.has(p.id)) seen.set(p.id, p);
       }

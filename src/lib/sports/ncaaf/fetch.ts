@@ -81,13 +81,13 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   for (const season of [y, y - 1]) {
     for (const team of NCAAF_TEAMS) {
       const events = await fetchTeamSchedule(team, season);
-      for (const eventId of events.slice(0, 2)) {
+      for (const eventId of events.slice(0, 8)) {
         for (const p of await fetchBoxScorePlayers(eventId)) {
           if (!seen.has(p.id)) seen.set(p.id, p);
         }
       }
     }
-    if (seen.size > 50) break;  // got enough — stop walking back
+    if (seen.size > 1500) break;  // got enough — stop walking back
   }
   return [...seen.values()];
 }

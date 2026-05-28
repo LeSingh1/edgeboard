@@ -98,12 +98,14 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
   const y = new Date().getFullYear();
 
-  for (const season of [y, y - 1]) {
+  // Bounded aggressively: caps kept finite because every event is two
+  // sequential ESPN calls — fully uncapping invites rate-limiting.
+  for (const season of [y, y - 1, y - 2]) {
     for (const competition of COMPETITIONS) {
       const teams = await fetchTeamsInCompetition(competition);
-      for (const team of teams.slice(0, 8)) {
+      for (const team of teams.slice(0, 25)) {
         const eventIds = await fetchTeamSchedule(`${competition}/${team}`, season);
-        for (const eventId of eventIds.slice(0, 5)) {
+        for (const eventId of eventIds.slice(0, 20)) {
           // Fetch game date from event header
           let gameDate = "";
           try {
@@ -128,7 +130,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
         }
       }
     }
-    if (seen.size > 100) break;
+    if (seen.size > 1000) break;
   }
   return [...seen.values()];
 }

@@ -43,7 +43,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const y = new Date().getFullYear();
   for (const team of NHL_TEAMS) {
     const events = await fetchTeamSchedule(team, y);
-    for (const eventId of events.slice(0, 2)) {
+    for (const eventId of events.slice(0, 8)) {
       for (const p of await fetchBoxScorePlayers(eventId)) {
         if (!seen.has(p.id)) seen.set(p.id, p);
       }

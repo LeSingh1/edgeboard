@@ -21,3 +21,7 @@ import { ncaamAdapter } from "./ncaam";
 registerAdapter(ncaamAdapter);
 import { ncaafAdapter } from "./ncaaf";
 registerAdapter(ncaafAdapter);
+import { lolAdapter } from "./lol";
+registerAdapter(lolAdapter);
+import { npbAdapter } from "./npb";
+registerAdapter(npbAdapter);

@@ -89,7 +89,7 @@ async function ingestWeek(dateStr: string): Promise<void> {
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   gamelogCache.clear();
   rosterCache.clear();
-  for (let w = 0; w < 40; w++) {
+  for (let w = 0; w < 160; w++) {
     await ingestWeek(dateStringForWeeksAgo(w));
   }
   return [...rosterCache.values()];

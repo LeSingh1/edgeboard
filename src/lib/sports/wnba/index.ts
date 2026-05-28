@@ -5,7 +5,7 @@ import type { Prop } from "@/lib/types";
 
 export function trainingSeasons(): number[] {
   const y = new Date().getFullYear();
-  return [y - 1, y];   // WNBA: short 40-game season → pull two years
+  return [y - 3, y - 2, y - 1, y];   // WNBA: short 40-game season → pull four years
 }
 
 const SUPPORTED_STATS = [

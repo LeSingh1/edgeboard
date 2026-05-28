@@ -101,8 +101,8 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   gamelogCache.clear();
   const seen = new Map<string, PlayerRef>();
 
-  // Fetch ~40 weeks of tournaments (roughly one PGA season)
-  for (let w = 0; w < 40; w++) {
+  // Fetch ~160 weeks of tournaments (roughly four PGA seasons)
+  for (let w = 0; w < 160; w++) {
     const dateStr = dateStringForWeeksAgo(w);
     const tournaments = await fetchTournamentWeek(dateStr);
     for (const { eventId, eventName, competitors } of tournaments) {
