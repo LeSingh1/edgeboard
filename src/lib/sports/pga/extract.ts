@@ -12,10 +12,11 @@ const MAP: Record<string, string> = {
   "Eagles": "EAGLES",
   "Fairways Hit": "FH",
   "Greens in Regulation": "GIR",
+  "Greens In Regulation": "GIR",
   "Putts": "PUTTS",
 };
 export function pgaExtractStat(game: RawGame, statType: string): number | null {
-  if (statType === "Birdies Or Better") {
+  if (statType === "Birdies Or Better" || statType === "Birdies or Better Matchup") {
     const b = n(game, "BIRDIES"), e = n(game, "EAGLES");
     if (b == null && e == null) return null;
     return (b ?? 0) + (e ?? 0);

@@ -10,7 +10,7 @@ export const nflAdapter: SportAdapter = {
     "Pass Yards", "Pass Completions", "Pass Attempts", "Pass TDs", "INT",
     "Receptions", "Rec Yards", "Rec TDs",
     "Rush Yards", "Rush Attempts", "Rush TDs",
-    "Rush+Rec Yards", "Pass+Rush Yards",
+    "Rush+Rec Yards", "Pass+Rush Yards", "Rush+Rec TDs",
     "Sacks", "Tackles", "Solo Tackles",
     "Longest Reception", "Longest Rush",
   ],

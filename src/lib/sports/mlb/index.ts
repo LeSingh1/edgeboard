@@ -4,9 +4,11 @@ import { mlbExtractStat } from "./extract";
 import type { Prop } from "@/lib/types";
 
 const SUPPORTED_STATS = [
-  "Hits", "Runs", "RBIs", "Home Runs", "Total Bases", "Stolen Bases", "Walks", "Strikeouts",
-  "Hits+Runs+RBIs", "Hitter Fantasy Score",
-  "Pitcher Strikeouts", "Ks", "Pitcher Walks", "Pitcher Hits Allowed", "Hits Allowed", "Earned Runs", "Pitcher Outs", "Ks + TB",
+  "Hits", "Runs", "RBIs", "Home Runs", "Total Bases", "TB", "Stolen Bases", "SB", "Walks", "Strikeouts",
+  "Hits+Runs+RBIs", "Hitter Fantasy Score", "Hitter FS", "Hitter Ks", "Singles", "Doubles",
+  "Pitcher Strikeouts", "Ks", "Pitcher Walks", "Pitcher Hits Allowed", "Hits Allowed",
+  "Earned Runs", "Earned Runs Allowed", "Pitcher Outs", "Ks + TB",
+  "Pitches Thrown", "Pitcher FS",
 ];
 
 export const mlbAdapter: SportAdapter = {

@@ -10,7 +10,8 @@ export function trainingSeasons(): number[] {
 
 const SUPPORTED_STATS = [
   "Points", "Rebounds", "Assists", "Steals", "Blocked Shots", "3PTM", "3PTA",
-  "FG Made", "FG Attempted", "FTM", "FTA", "Turnovers",
+  "FG Made", "FG Attempted", "FTM", "FTA", "Turnovers", "Personal Fouls",
+  "2-PT Made", "2-PT Att", "Double-Double",
   "PRA", "Pts+Rebs", "Pts+Asts", "Rebs+Asts", "Blks+Stls", "Fantasy Score",
 ];
 

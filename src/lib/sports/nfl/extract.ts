@@ -38,6 +38,11 @@ export function nflExtractStat(game: RawGame, statType: string): number | null {
     const p = n(game, "YDS-pass"), r = n(game, "YDS-rush");
     return p != null && r != null ? p + r : null;
   }
+  if (statType === "Rush+Rec TDs") {
+    const r = n(game, "TD-rush"), c = n(game, "TD-rec");
+    if (r == null && c == null) return null;
+    return (r ?? 0) + (c ?? 0);
+  }
   const k = MAP[statType];
   return k ? n(game, k) : null;
 }
