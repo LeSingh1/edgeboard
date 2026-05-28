@@ -174,11 +174,35 @@ export async function runSport(
     const testPicks: ScoredPick[] = [];
     const TEST_FRACTION = 0.2;
     // Candidate-line offsets in standard deviations around the rolling mean.
-    // Spread chosen so predictedPMore lands roughly across [0.05, 0.95].
-    const SIGMA_OFFSETS = [-2, -1, -0.5, 0, 0.5, 1, 2];
-    const WARMUP = 5;
+    // A dense grid from -3σ..+3σ samples the full probability curve and is the
+    // primary sample-size multiplier — each real game-stat yields one pick per
+    // offset. Spread covers predictedPMore across the clamped [0.05, 0.95] band.
+    const SIGMA_OFFSETS: number[] = [];
+    for (let k = -3; k <= 3 + 1e-9; k += 0.2) SIGMA_OFFSETS.push(Math.round(k * 100) / 100);
+    // Lower warm-up admits more games into training (helps short-history
+    // players and short-season sports), at the cost of noisier early rolling
+    // stats — acceptable since the calibrator handles miscalibration.
+    const WARMUP = 3;
+
+    // Skip retired / inactive players to save time and keep the model focused
+    // on players who actually have betting markets. A player is "active" if
+    // their most recent game is within this window. ESPN rosters are already
+    // built from current+prior season, but cached sports (soccer/afl/pga/
+    // tennis/npb/lol) accumulate a decade of players — this trims the long-
+    // retired ones whose stale lines no longer reflect a live player.
+    const ACTIVE_WINDOW_MS = 1000 * 60 * 60 * 24 * 730; // ~24 months
+    const activeCutoff = Date.now() - ACTIVE_WINDOW_MS;
 
     for (const { games } of gamelogs) {
+      if (games.length === 0) continue;
+      // Drop players with no recent game (retired / no longer playing).
+      const latestMs = games.reduce((max, g) => {
+        const t = Date.parse(g.gameDate);
+        return Number.isFinite(t) && t > max ? t : max;
+      }, 0);
+      // latestMs === 0 means no parseable dates — keep the player (can't tell).
+      if (latestMs > 0 && latestMs < activeCutoff) continue;
+
       // Sort chronologically so rolling stats use only past info.
       const sortedGames = [...games].sort((a, b) =>
         a.gameDate < b.gameDate ? -1 : a.gameDate > b.gameDate ? 1 : 0,
