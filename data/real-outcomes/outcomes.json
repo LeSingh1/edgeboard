@@ -1,0 +1,59 @@
+[
+  {
+    "date": "2026-05-28",
+    "slipId": "autopilot-2026-05-28",
+    "result": "lost",
+    "picks": [
+      {
+        "playerName": "Carla Leite",
+        "sport": "WNBA2H",
+        "stat": "Fantasy Score",
+        "oddsType": "standard",
+        "side": "less",
+        "line": 12.5,
+        "predictedPMore": 0.14,
+        "hit": false
+      },
+      {
+        "playerName": "Bridget Carleton",
+        "sport": "WNBA2H",
+        "stat": "PRA",
+        "oddsType": "standard",
+        "side": "less",
+        "line": 12.5,
+        "predictedPMore": 0.16,
+        "hit": false
+      },
+      {
+        "playerName": "DuDu",
+        "sport": "LOL",
+        "stat": "MAPS 1-2 Kills",
+        "oddsType": "goblin",
+        "side": "more",
+        "line": 2.5,
+        "predictedPMore": 0.59,
+        "hit": false
+      },
+      {
+        "playerName": "Pyosik",
+        "sport": "LOL",
+        "stat": "MAPS 1-2 Kills",
+        "oddsType": "goblin",
+        "side": "more",
+        "line": 3.5,
+        "predictedPMore": 0.59,
+        "hit": false
+      },
+      {
+        "playerName": "Natsuki Takeuchi",
+        "sport": "NPB",
+        "stat": "Earned Runs Allowed",
+        "oddsType": "goblin",
+        "side": "more",
+        "line": 2.5,
+        "predictedPMore": 0.59,
+        "hit": false
+      }
+    ]
+  }
+]
