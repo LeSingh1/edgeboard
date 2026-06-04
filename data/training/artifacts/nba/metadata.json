@@ -1,0 +1,15 @@
+{
+  "trainedAt": "2026-06-03T19:35:04.886Z",
+  "sampleSize": 16002602,
+  "version": "training-v2",
+  "trainSampleSize": 12782407,
+  "testSampleSize": 3220195,
+  "testMetrics": {
+    "sampleSize": 3220195,
+    "bucketsEvaluated": 14,
+    "logLoss": 0.28034586782689247,
+    "baselineLogLoss": 0.2901817477900808,
+    "brier": 0.08381738872906166,
+    "accuracy": 0.8825207790211462
+  }
+}

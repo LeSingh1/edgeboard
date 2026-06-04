@@ -17,6 +17,13 @@ interface PipelineOpts {
   rootDir: string;
   minBucketSize: number;
   maxConcurrent: number;
+  /**
+   * Optional allow-list of sport keys (matched against each adapter's
+   * leagues[0], case-insensitive). When set, only those sports are trained —
+   * used to retry a small subset (e.g. a flaky data source) without redoing
+   * the sports that already produced good artifacts.
+   */
+  sports?: string[];
 }
 
 /** Run an async fn over items with a concurrency cap. Preserves input order in results. */
@@ -35,7 +42,10 @@ async function pmap<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>
 }
 
 export async function runPipeline(opts: PipelineOpts): Promise<PipelineSummary> {
-  const adapters = allAdapters();
+  const filter = opts.sports?.map((s) => s.toLowerCase());
+  const adapters = filter
+    ? allAdapters().filter((a) => filter.includes(a.leagues[0].toLowerCase()))
+    : allAdapters();
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
 

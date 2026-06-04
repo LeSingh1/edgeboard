@@ -23,14 +23,19 @@
  * Exit code is 0 when healthy, 1 when any signal trips — so `launchd`'s log
  * and `launchctl print` show a non-zero last-exit for quick diagnosis.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { execSync, spawn } from "node:child_process";
+import { openSync } from "node:fs";
 import { readProgress, isStuck, notify } from "@/lib/training/watchdog";
 
 const ROOT = "data/training";
 const META = join(ROOT, "meta");
+const ARTIFACTS = join(ROOT, "artifacts");
 const STUCK_MINUTES = 45;     // heartbeat older than this during a run = hung
 const OVERDUE_HOURS = 26;     // daily job should refresh within a day
+const RESTART_COOLDOWN_MIN = 20;  // don't relaunch more than once per this window
+const TRAIN_HEAP_MB = 12288;  // --max-old-space-size; matches the manual OOM-safe run
 
 function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -38,6 +43,61 @@ function pidAlive(pid: number): boolean {
 
 async function readJson<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await readFile(path, "utf8")) as T; } catch { return null; }
+}
+
+/** Is a train-all.ts process already running? Avoids double-launch. */
+function trainingRunning(): boolean {
+  try {
+    const out = execSync("pgrep -f train-all.ts", { encoding: "utf8" }).trim();
+    return out.length > 0;
+  } catch {
+    return false; // pgrep exits non-zero when no match
+  }
+}
+
+/** Count sports whose deployed artifact is the new train/test (v2) schema. */
+async function v2Status(): Promise<{ v2: number; total: number }> {
+  let v2 = 0, total = 0;
+  try {
+    const dirs = await readdir(ARTIFACTS, { withFileTypes: true });
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      total++;
+      const meta = await readJson<{ version?: string }>(join(ARTIFACTS, d.name, "metadata.json"));
+      if (meta?.version === "training-v2") v2++;
+    }
+  } catch { /* no artifacts dir yet */ }
+  return { v2, total };
+}
+
+/**
+ * Self-heal: relaunch the retrain detached so it survives this watchdog
+ * process exiting (and launchd reaping the job). Guarded by a cooldown file
+ * so a flapping run can't spawn a storm of overlapping trainers.
+ */
+async function maybeRestartTraining(reason: string): Promise<string | null> {
+  // Cooldown: skip if we relaunched within RESTART_COOLDOWN_MIN.
+  const stateFile = join(META, "watchdogRestart.json");
+  const state = await readJson<{ lastAttemptMs: number; attempts: number }>(stateFile);
+  const now = Date.now();
+  if (state && now - state.lastAttemptMs < RESTART_COOLDOWN_MIN * 60_000) {
+    return `restart suppressed (cooldown, last attempt ${Math.round((now - state.lastAttemptMs) / 60_000)}m ago)`;
+  }
+
+  const logFd = openSync(join(META, "manual-v2-run.log"), "a");
+  const child = spawn("npx", ["tsx", "scripts/train-all.ts"], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${TRAIN_HEAP_MB}` },
+  });
+  child.unref();
+
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    stateFile,
+    JSON.stringify({ lastAttemptMs: now, attempts: (state?.attempts ?? 0) + 1, reason, pid: child.pid }, null, 2),
+  );
+  return `RESTARTED training (pid ${child.pid}) — ${reason}`;
 }
 
 async function main() {
@@ -78,14 +138,33 @@ async function main() {
     problems.push(`MODELS: ${check.okCount}/${check.total} healthy — ${bad.join(", ")}`);
   }
 
+  // 4. SELF-HEAL — if no trainer is running but the v2 migration is unfinished
+  //    (or the last run is overdue), relaunch it detached so the work finishes
+  //    overnight without a human. This is what makes the watchdog actively keep
+  //    training alive rather than just reporting that it died.
+  const running = trainingRunning();
+  const { v2, total } = await v2Status();
+  const migrationDone = total > 0 && v2 === total;
+  const overdueTripped = problems.some((p) => p.startsWith("OVERDUE"));
+  let healAction: string | null = null;
+  if (!running && (!migrationDone || overdueTripped)) {
+    healAction = await maybeRestartTraining(
+      !migrationDone ? `v2 migration incomplete (${v2}/${total})` : "training overdue",
+    );
+  }
+
   const stamp = new Date().toISOString();
-  if (problems.length === 0) {
-    console.log(`[watchdog ${stamp}] OK — training system healthy`);
+  if (healAction) console.error(`[watchdog ${stamp}] ${healAction}`);
+
+  if (problems.length === 0 && (running || migrationDone)) {
+    console.log(`[watchdog ${stamp}] OK — training system healthy (v2 ${v2}/${total}${running ? ", run in progress" : ""})`);
     process.exit(0);
   } else {
     for (const p of problems) console.error(`[watchdog ${stamp}] ${p}`);
-    notify(problems.join(" | "), "EdgeBoard watchdog alert");
-    process.exit(1);
+    if (problems.length > 0) {
+      notify(problems.join(" | ") + (healAction ? ` | ${healAction}` : ""), "EdgeBoard watchdog alert");
+    }
+    process.exit(problems.length > 0 ? 1 : 0);
   }
 }
 

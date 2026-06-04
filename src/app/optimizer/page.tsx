@@ -17,6 +17,7 @@ import {
   ShoppingCart,
   Sparkles,
   AlertTriangle,
+  Wallet,
 } from "lucide-react";
 import { useEffect } from "react";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -47,7 +48,18 @@ import { variantCount, type VariantSet } from "@/lib/variantGroups";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { RiskMode, Prop } from "@/lib/types";
 
-const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
+const ENTRY_PRESETS = [5, 10, 20, 50, 100, 250, 500, 1000] as const;
+const ENTRY_MAX = 10000;
+const BUDGET_PRESETS = [50, 100, 250, 500, 1000, 5000] as const;
+const BUDGET_MAX = 100000;
+// Auto entry-cost mode aims to spread the budget across roughly this many lineups.
+const AUTO_TARGET_LINEUPS = 10;
+// Snap an auto-computed entry to a clean dollar step so it reads nicely.
+function niceEntry(raw: number): number {
+  const v = Math.max(1, Math.min(ENTRY_MAX, raw));
+  const step = v >= 500 ? 100 : v >= 100 ? 50 : v >= 20 ? 10 : v >= 10 ? 5 : 1;
+  return Math.max(1, Math.round(v / step) * step);
+}
 const RISK_MODES: { id: RiskMode; label: string; icon: typeof Shield; desc: string }[] = [
   { id: "safe",       label: "Safe",       icon: Shield, desc: "Highest chance of hitting" },
   { id: "balanced",   label: "Balanced",   icon: Scale,  desc: "Best avg $ (same-game picks penalized)" },
@@ -186,6 +198,12 @@ export default function OptimizerPage() {
   const reversion = useMemo(() => detectReversion(selectedProps), [selectedProps]);
 
   const [entry, setEntry] = useState<number>(20);
+  // Auto mode: size the per-lineup entry automatically from the total budget so
+  // it spreads across a sensible number of lineups.
+  const [autoEntry, setAutoEntry] = useState<boolean>(false);
+  // Total bankroll cap across ALL submitted lineups. The optimizer only returns
+  // as many top lineups as fit inside this budget (budget ÷ entry).
+  const [budget, setBudget] = useState<number>(100);
   const [risk, setRisk] = useState<RiskMode>("balanced");
   const [size, setSize] = useState<number>(slipSize);
   const [running, setRunning] = useState(false);
@@ -207,6 +225,13 @@ export default function OptimizerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [N]);
 
+  // Auto entry-cost: keep `entry` in sync with the budget while auto mode is on.
+  useEffect(() => {
+    if (autoEntry) {
+      setEntry(niceEntry(budget / AUTO_TARGET_LINEUPS));
+    }
+  }, [autoEntry, budget]);
+
   const k = Math.min(size, N);
   const totalLineups = N >= k && k >= 2 ? nCk(N, k) * (1 << k) : 0;
 
@@ -215,6 +240,10 @@ export default function OptimizerPage() {
   const slipMultiplier = baseMult * oddsFactor;
   const slipPayout = entry * slipMultiplier;
   const slipEv = slipHitProb * slipPayout - entry;
+
+  // How many lineups fit inside the total budget at the current entry cost.
+  const budgetLineups = Math.max(1, Math.floor(budget / Math.max(1, entry)));
+  const submitTotal = budgetLineups * entry; // actual $ submitted (≤ budget)
 
   // Color cue for the live %
   const pctColor =
@@ -233,7 +262,7 @@ export default function OptimizerPage() {
       lineupSize: k,
       entryCost: entry,
       riskMode: risk,
-      maxResults: 50,
+      maxResults: Math.min(50, budgetLineups),
       variantsByPropId,
       filters,
     });
@@ -761,27 +790,121 @@ export default function OptimizerPage() {
           </ControlCard>
 
           <ControlCard title="Entry cost" icon={TrendingUp} accent="#FFE600" accent2="#7B2FFF">
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap items-start gap-3">
+              {/* Auto toggle — sizes the entry from the total budget */}
+              <button
+                onClick={() => setAutoEntry((v) => !v)}
+                className={cn(
+                  "px-5 h-12 rounded-full border-4 font-[family-name:var(--font-heading)] font-black text-lg uppercase tracking-wider transition-all inline-flex items-center gap-2",
+                  autoEntry
+                    ? "bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] border-[#FFE600] text-white shadow-[2px_2px_0_#FFE600]"
+                    : "border-[#FFE600] text-[#FFE600] hover:bg-[#FFE600]/10",
+                )}
+              >
+                <Sparkles size={16} strokeWidth={3} />
+                Auto
+              </button>
               {ENTRY_PRESETS.map((p) => (
                 <button
                   key={p}
-                  onClick={() => setEntry(p)}
+                  onClick={() => {
+                    setAutoEntry(false);
+                    setEntry(p);
+                  }}
                   className={cn(
                     "px-5 h-12 rounded-full border-4 font-[family-name:var(--font-heading)] font-black text-lg transition-all",
-                    p === entry
+                    !autoEntry && p === entry
                       ? "bg-[#7B2FFF] border-[#FFE600] text-white shadow-[2px_2px_0_#FFE600]"
                       : "border-[#7B2FFF] text-white hover:bg-[#7B2FFF]/20",
+                    autoEntry && "opacity-40",
                   )}
                 >
                   ${p}
                 </button>
               ))}
-              <input
-                type="number"
-                value={entry}
-                onChange={(e) => setEntry(Math.max(1, Math.min(1000, Number(e.target.value) || 0)))}
-                className="w-20 h-12 rounded-full border-4 border-dashed border-[#FFE600] bg-transparent px-3 font-[family-name:var(--font-heading)] font-black text-center text-white focus:outline-none focus:bg-[#FFE600]/10"
-              />
+              <div className="flex flex-col items-center gap-1">
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-[family-name:var(--font-heading)] font-black text-lg text-[#FFE600] pointer-events-none">
+                    $
+                  </span>
+                  <input
+                    type="number"
+                    value={entry}
+                    disabled={autoEntry}
+                    onChange={(e) => setEntry(Math.max(1, Math.min(ENTRY_MAX, Number(e.target.value) || 0)))}
+                    min={1}
+                    max={ENTRY_MAX}
+                    className={cn(
+                      "w-32 h-12 rounded-full border-4 border-dashed border-[#FFE600] bg-transparent pl-8 pr-3 font-[family-name:var(--font-heading)] font-black text-center text-white focus:outline-none focus:bg-[#FFE600]/10",
+                      autoEntry && "opacity-40 cursor-not-allowed",
+                    )}
+                  />
+                </div>
+                <span className="text-[10px] text-white/50 font-bold uppercase tracking-wide">
+                  Custom · up to ${ENTRY_MAX.toLocaleString()}
+                </span>
+              </div>
+            </div>
+            {autoEntry && (
+              <div className="mt-4 rounded-2xl border-4 border-[#FFE600]/40 bg-[#0D0D1A]/50 px-4 py-3">
+                <div className="font-[family-name:var(--font-heading)] font-black uppercase text-sm text-white">
+                  Auto-sized to <span className="text-[#FFE600]">${entry.toLocaleString()}</span> per lineup
+                </div>
+                <div className="text-[11px] text-white/50 font-bold mt-1">
+                  Spreads your ${budget.toLocaleString()} budget across ~{AUTO_TARGET_LINEUPS} lineups · adjusts when you change the budget
+                </div>
+              </div>
+            )}
+          </ControlCard>
+
+          <ControlCard title="Total budget" icon={Wallet} accent="#00F5D4" accent2="#FF3AF2">
+            <p className="text-white/60 text-xs mb-3">
+              The most money you want to put across <span className="text-white font-bold">all</span> lineups
+              combined. The optimizer only submits as many top lineups as fit inside this cap.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              {BUDGET_PRESETS.map((b) => (
+                <button
+                  key={b}
+                  onClick={() => setBudget(b)}
+                  className={cn(
+                    "px-5 h-12 rounded-full border-4 font-[family-name:var(--font-heading)] font-black text-lg transition-all",
+                    b === budget
+                      ? "bg-[#00F5D4] border-[#FF3AF2] text-[#0D0D1A] shadow-[2px_2px_0_#FF3AF2]"
+                      : "border-[#00F5D4] text-white hover:bg-[#00F5D4]/15",
+                  )}
+                >
+                  ${b.toLocaleString()}
+                </button>
+              ))}
+              <div className="flex flex-col items-center gap-1">
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-[family-name:var(--font-heading)] font-black text-lg text-[#00F5D4] pointer-events-none">
+                    $
+                  </span>
+                  <input
+                    type="number"
+                    value={budget}
+                    onChange={(e) => setBudget(Math.max(1, Math.min(BUDGET_MAX, Number(e.target.value) || 0)))}
+                    min={1}
+                    max={BUDGET_MAX}
+                    className="w-32 h-12 rounded-full border-4 border-dashed border-[#00F5D4] bg-transparent pl-8 pr-3 font-[family-name:var(--font-heading)] font-black text-center text-white focus:outline-none focus:bg-[#00F5D4]/10"
+                  />
+                </div>
+                <span className="text-[10px] text-white/50 font-bold uppercase tracking-wide">
+                  Custom · up to ${BUDGET_MAX.toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <div className="mt-4 rounded-2xl border-4 border-[#00F5D4]/40 bg-[#0D0D1A]/50 px-4 py-3">
+              <div className="font-[family-name:var(--font-heading)] font-black uppercase text-sm text-white">
+                ${budget.toLocaleString()} budget ÷ ${entry.toLocaleString()} entry ={" "}
+                <span className="text-[#00F5D4]">{budgetLineups.toLocaleString()} lineup{budgetLineups === 1 ? "" : "s"}</span>
+              </div>
+              <div className="text-[11px] text-white/50 font-bold mt-1">
+                You&apos;ll submit up to {Math.min(50, budgetLineups).toLocaleString()} lineups · ${submitTotal.toLocaleString()} total
+                {budgetLineups > 50 && " (capped at the top 50)"}
+              </div>
             </div>
           </ControlCard>
 

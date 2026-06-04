@@ -24,6 +24,8 @@ interface CargoRow {
 
 const gamelogCache = new Map<string, RawGame[]>();
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 function rowToGame(t: CargoRow["title"]): RawGame {
   return {
     eventId: `${t.Link ?? ""}|${t.DT ?? ""}`,
@@ -39,7 +41,13 @@ function rowToGame(t: CargoRow["title"]): RawGame {
   };
 }
 
-async function fetchPage(offset: number): Promise<CargoRow[]> {
+// Fandom's Cargo API rate-limits bursts: it answers with {error:{code:
+// "ratelimited"}} and asks you to "wait some time". The old version treated
+// that as a hard empty result, so one throttled page aborted the whole roster
+// (the first page failing → zero players → zero training samples). Now a
+// ratelimited / transient response is retried with exponential backoff; we
+// only return [] for a real empty/末 page.
+async function fetchPage(offset: number, attempts = 6): Promise<CargoRow[]> {
   const params = new URLSearchParams({
     action: "cargoquery",
     tables: "ScoreboardPlayers",
@@ -49,15 +57,18 @@ async function fetchPage(offset: number): Promise<CargoRow[]> {
     offset: String(offset),
     format: "json",
   });
-  try {
-    const res = await fetch(`${API}?${params}`, { headers: { "User-Agent": UA } });
-    if (!res.ok) return [];
-    const body = await res.json() as { cargoquery?: CargoRow[]; error?: unknown };
-    if (body.error || !body.cargoquery) return [];
-    return body.cargoquery;
-  } catch {
-    return [];
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`${API}?${params}`, { headers: { "User-Agent": UA } });
+      if (!res.ok) { await sleep(Math.min(60000, 4000 * 2 ** i)); continue; }
+      const body = await res.json() as { cargoquery?: CargoRow[]; error?: { code?: string } };
+      if (body.error) { await sleep(Math.min(60000, 4000 * 2 ** i)); continue; } // ratelimited → wait & retry
+      return body.cargoquery ?? [];
+    } catch {
+      await sleep(Math.min(60000, 4000 * 2 ** i));
+    }
   }
+  return [];
 }
 
 export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
@@ -65,6 +76,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
   const seen = new Map<string, PlayerRef>();
 
   for (let page = 0; page < MAX_PAGES; page++) {
+    if (page > 0) await sleep(1200);  // pace pages so we don't re-trip Fandom's rate limit
     const rows = await fetchPage(page * PAGE);
     if (rows.length === 0) break;
     for (const { title: t } of rows) {

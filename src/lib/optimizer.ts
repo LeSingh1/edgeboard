@@ -3,7 +3,14 @@ import type { VariantSet } from "@/lib/variantGroups";
 
 /** Lazy generator: every k-sized subset of arr. */
 export function* combinations<T>(arr: T[], k: number): Generator<T[]> {
-  if (k > arr.length || k <= 0) return;
+  if (k < 0 || k > arr.length) return;
+  // k === 0 MUST yield the empty combination so the `[first, ...c]` branch
+  // below can build singletons. The old guard (`k <= 0` → return nothing)
+  // silently dropped every combination that included the first element of any
+  // sub-array, so the optimizer only ever evaluated lineups skewed toward the
+  // LAST props in the list (e.g. 2-of-4 returned 3 pairs, not 6). This base
+  // case is what makes the full lineup space actually get explored.
+  if (k === 0) { yield []; return; }
   if (k === arr.length) { yield arr; return; }
   const [first, ...rest] = arr;
   for (const c of combinations(rest, k - 1)) yield [first, ...c];
@@ -197,23 +204,25 @@ export const EARLY_EXIT_PAYOUTS: Record<string, number> = {
  *   - goblin:   × 0.85 (PrizePicks-published base — line is easier)
  *   - standard: × 1.00
  *
- * STACKING — IMPORTANT CAVEAT
- * ---------------------------
- * We stack these factors multiplicatively in `oddsPayoutFactor`, so a 4-pick
- * with 2 demons gets baseMult × 1.5² = baseMult × 2.25. PrizePicks's actual
- * published payout table for multi-demon slips is closer to ADDITIVE — a
- * 4-pick with 2 demons pays roughly baseMult × 1.7 in their app.
+ * STACKING
+ * --------
+ * Per-pick factors stack ADDITIVELY: factor = 1 + Σ(perPickFactor − 1). A
+ * 4-pick with 2 demons pays baseMult × (1 + 2×0.5) = baseMult × 2.0, and 2
+ * goblins pays baseMult × (1 − 2×0.15) = baseMult × 0.70 — both close to
+ * PrizePicks's actual published behavior.
  *
- * Net effect: our payout estimate is accurate within ~5% for slips with 0–1
- * demons, but overstates by ~10–20% for slips with 2+ demons stacked. The
- * /slips page UI surfaces this — payouts shown are an estimate, not a
- * binding quote.
+ * This replaced an earlier MULTIPLICATIVE model (1.5² = 2.25 for 2 demons)
+ * that over-credited multi-demon slips by ~10–20%. Combined with the board
+ * historically pricing every demon at a flat 0.40 implied prob, that inflated
+ * EV made the optimizer favor demon stacks on essentially every slip even
+ * though demons rarely hit. Additive stacking + real model pricing
+ * (boardPricing.ts) together remove that bias. Single demon/goblin slips are
+ * unchanged (1.5 / 0.85). Result is floored at 0.1 so an all-goblin slip can't
+ * drive the factor to zero.
  *
- * Why not match PP's exact schedule? PrizePicks doesn't publish a complete
- * lineup-size × demon-count × goblin-count payout table — what they DO
- * publish is the per-pick factor and the base table. We mirror their stated
- * structure verbatim rather than trying to reverse-engineer the hidden
- * scaling. Calibration to observed slips would tighten this further.
+ * Still an estimate, not a binding quote — PrizePicks doesn't publish a full
+ * lineup-size × demon-count × goblin-count table, so the /slips UI flags
+ * payouts as approximate. Calibration to observed slips would tighten further.
  */
 /** Per-pick payout factor. Exported so the UI's Payout Reference panel
  *  reads from the same source the EV math uses — no two-source drift.
@@ -230,8 +239,14 @@ export const ODDS_FACTOR: Record<Prop["oddsType"], number> = {
   goblin: 0.85,
 };
 
+/**
+ * Combined per-slip payout factor from each pick's odds_type, stacked
+ * ADDITIVELY (see the STACKING note above): 1 + Σ(perPickFactor − 1). Floored
+ * at 0.1 so a deep all-goblin slip can't zero out the payout.
+ */
 export function oddsPayoutFactor(props: Prop[]): number {
-  return props.reduce((acc, p) => acc * (ODDS_FACTOR[p.oddsType] ?? 1), 1);
+  const stacked = props.reduce((acc, p) => acc + ((ODDS_FACTOR[p.oddsType] ?? 1) - 1), 1);
+  return Math.max(0.1, stacked);
 }
 
 /** Poisson Binomial DP: probability of exactly h hits among k independent picks. */
@@ -398,6 +413,11 @@ export interface FilterOptions {
 interface ComputedLineup {
   picks: { prop: Prop; side: PickSide; probability: number }[];
   hitProbability: number;
+  /** Probability the lineup returns MORE than its entry cost — i.e. an actual
+   *  profit. Differs from hitProbability for Flex, where the lowest paying tier
+   *  (e.g. 3/5 → 0.4×) "cashes" but still loses money. This is the honest
+   *  "chance you end up ahead on this slip" number. */
+  probProfit: number;
   expectedValue: number;
   grossPayout: number;
   payoutMultiplier: number;
@@ -426,9 +446,14 @@ function computePower(
   const payoutMultiplier = baseMult * oddsFactor * reversionFactor;
   const grossPayout = entryCost * payoutMultiplier;
   const expectedValue = hitProbability * grossPayout - entryCost;
+  // Power pays all-or-nothing, so you profit exactly when every pick hits —
+  // provided the multiplier actually exceeds 1× (a deep goblin stack can dip
+  // below break-even). hitProbability already folds in the correlation penalty.
+  const probProfit = payoutMultiplier > 1 ? hitProbability : 0;
   return {
     picks,
     hitProbability,
+    probProfit,
     expectedValue,
     grossPayout,
     payoutMultiplier,
@@ -457,6 +482,7 @@ function computeFlex(
   const tiers = FLEX_PAYOUT_TABLES[props.length] ?? [];
   let ev = -entryCost;
   let pAny = 0;
+  let pProfit = 0;
   let topMult = 0;
   for (const tier of tiers) {
     const adjustedMult = tier.multiplier * oddsFactor * reversionFactor;
@@ -464,10 +490,15 @@ function computeFlex(
     const p = dist[tier.hits] ?? 0;
     ev += p * entryCost * adjustedMult;
     pAny += p;
+    // Only tiers that pay MORE than the stake are an actual profit. The bottom
+    // Flex tier (e.g. 3/5 → 0.4×) "cashes" but still loses 60% — it must NOT
+    // count toward the honest profit probability.
+    if (adjustedMult > 1) pProfit += p;
   }
   return {
     picks,
     hitProbability: pAny,
+    probProfit: pProfit,
     expectedValue: ev,
     grossPayout: entryCost * topMult,
     payoutMultiplier: topMult,

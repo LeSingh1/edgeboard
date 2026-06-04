@@ -60,6 +60,11 @@ export default function ModelLabPage() {
         matrix, and your bankroll history. No mock data.
       </p>
 
+      {/* Training-data scale — total synthetic picks the calibration models
+          were fit on, summed across every sport. Distinct from the NBA-only
+          backtest below (which evaluates a held-out slice). */}
+      <TrainingDataBanner />
+
       {/* Backtest report — full-width above the grid. The trained
           calibration, k-fold CV stability, and walk-forward drift chart
           all live in this component. */}
@@ -74,6 +79,81 @@ export default function ModelLabPage() {
         <OddsReferencePanel />
       </div>
     </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 0. Training-data scale — cross-sport total the models were trained on
+// ════════════════════════════════════════════════════════════════════
+
+interface TrainingTotals {
+  currentlyRunning: boolean;
+  totalSampleSize: number;
+  totalTrainSampleSize: number;
+  totalTestSampleSize: number;
+  perSport: Record<string, { sampleSize: number; freshness: string }>;
+}
+
+/** Compact human count: 67_300_000 → "67.3M", 11_176_368 → "11.2M". */
+function fmtCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+function TrainingDataBanner() {
+  const [t, setT] = useState<TrainingTotals | null>(null);
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/training-status").then((r) => r.json()).then(setT).catch(() => null);
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  if (!t || t.totalSampleSize === 0) return null;
+
+  const sportsTrained = Object.values(t.perSport).filter((s) => s.sampleSize > 0).length;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mt-12 rounded-3xl border-4 border-[#00F5D4]/60 bg-gradient-to-br from-[#00F5D4]/10 to-transparent p-6 md:p-8"
+    >
+      <div className="flex items-center gap-2 text-white/60 text-xs uppercase tracking-widest font-bold">
+        <Sparkles className="w-4 h-4 text-[#00F5D4]" />
+        Training data
+        {t.currentlyRunning && (
+          <span className="text-[#FFE600] inline-flex items-center gap-1">
+            <Loader2 className="w-3 h-3 animate-spin" /> retraining now
+          </span>
+        )}
+      </div>
+      <div className="mt-2 flex flex-wrap items-end gap-x-10 gap-y-4">
+        <div>
+          <div className="font-[family-name:var(--font-heading)] font-black tracking-tighter text-6xl md:text-7xl gradient-text-rainbow leading-none">
+            {fmtCount(t.totalSampleSize)}
+          </div>
+          <div className="text-white/50 text-sm mt-1">
+            total synthetic picks across {sportsTrained} sports
+          </div>
+        </div>
+        <div className="flex gap-8">
+          <div>
+            <div className="font-[family-name:var(--font-display)] text-3xl text-[#FFE600]">
+              {fmtCount(t.totalTrainSampleSize)}
+            </div>
+            <div className="text-white/50 text-xs uppercase tracking-widest font-bold mt-1">Train</div>
+          </div>
+          <div>
+            <div className="font-[family-name:var(--font-display)] text-3xl text-[#FF6B6B]">
+              {fmtCount(t.totalTestSampleSize)}
+            </div>
+            <div className="text-white/50 text-xs uppercase tracking-widest font-bold mt-1">Held-out test</div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 

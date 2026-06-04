@@ -173,12 +173,6 @@ export async function runSport(
     const trainPicks: ScoredPick[] = [];
     const testPicks: ScoredPick[] = [];
     const TEST_FRACTION = 0.2;
-    // Candidate-line offsets in standard deviations around the rolling mean.
-    // A dense grid from -3σ..+3σ samples the full probability curve and is the
-    // primary sample-size multiplier — each real game-stat yields one pick per
-    // offset. Spread covers predictedPMore across the clamped [0.05, 0.95] band.
-    const SIGMA_OFFSETS: number[] = [];
-    for (let k = -3; k <= 3 + 1e-9; k += 0.2) SIGMA_OFFSETS.push(Math.round(k * 100) / 100);
     // Lower warm-up admits more games into training (helps short-history
     // players and short-season sports), at the cost of noisier early rolling
     // stats — acceptable since the calibrator handles miscalibration.
@@ -193,6 +187,14 @@ export async function runSport(
     const ACTIVE_WINDOW_MS = 1000 * 60 * 60 * 24 * 730; // ~24 months
     const activeCutoff = Date.now() - ACTIVE_WINDOW_MS;
 
+    // Pass 1 — build the chronological value series for every active player+stat
+    // and count "predictable rows" (games eligible for a walk-forward pick).
+    // Storing raw numbers here is cheap; the heavy pick objects come in pass 2,
+    // after we've sized the line grid against this count. Sizing first is what
+    // keeps memory bounded — without it, big-roster sports (NBA/MLB) generate
+    // 100M+ picks and blow the heap.
+    const series: { stat: string; values: number[] }[] = [];
+    let predictableRows = 0;
     for (const { games } of gamelogs) {
       if (games.length === 0) continue;
       // Drop players with no recent game (retired / no longer playing).
@@ -218,57 +220,87 @@ export async function runSport(
           if (v != null && Number.isFinite(v)) values.push(v);
         }
         if (values.length < WARMUP + 1) continue;
+        series.push({ stat, values });
+        predictableRows += values.length - WARMUP;
+      }
+    }
 
-        // Index that divides train (earlier games) from test (latest games).
-        // cutoff counts from WARMUP since that's the first predictable game.
-        const cutoff =
-          WARMUP + Math.floor((values.length - WARMUP) * (1 - TEST_FRACTION));
+    // Adaptive line-grid density. Each predictable row emits one pick per
+    // sigma-offset, so total picks ≈ predictableRows × offsetCount. We size the
+    // grid so every sport lands above the 10M floor yet under a memory-safe
+    // ceiling: data-sparse sports get the densest grid (MAX_OFFSETS spanning
+    // -3σ..+3σ), while huge-roster sports get a sparser grid. A hard PICK_CAP
+    // (enforced in pass 2) backstops the very largest sports — they stop once
+    // they've emitted enough picks, which is still well over 10M. MIN_OFFSETS
+    // preserves enough probability spread for a meaningful isotonic fit.
+    const PICK_CAP = 16_000_000;   // resident picks per sport — the memory bound
+    const MAX_OFFSETS = 31;        // dense grid, 0.2σ steps across [-3σ, +3σ]
+    const MIN_OFFSETS = 11;        // floor keeps the calibration curve well-spread
+    const offsetCount = Math.max(
+      MIN_OFFSETS,
+      Math.min(MAX_OFFSETS, predictableRows > 0 ? Math.floor(PICK_CAP / predictableRows) : MAX_OFFSETS),
+    );
+    const SIGMA_OFFSETS: number[] = [];
+    const offsetStep = 6 / (offsetCount - 1);
+    for (let j = 0; j < offsetCount; j++) {
+      SIGMA_OFFSETS.push(Math.round((-3 + j * offsetStep) * 100) / 100);
+    }
 
-        // Walk-forward: for each game i ≥ WARMUP, compute rolling mean/std
-        // from [0..i-1] (strictly past), then sample a grid of candidate
-        // lines around that mean. Each candidate becomes one training pick.
-        for (let i = WARMUP; i < values.length; i++) {
-          const past = values.slice(0, i);
-          const mu = past.reduce((a, b) => a + b, 0) / past.length;
-          const variance =
-            past.reduce((a, b) => a + (b - mu) ** 2, 0) / past.length;
-          const rawSigma = Math.sqrt(variance);
-          // Floor sigma so we don't divide by zero on tight stats (e.g.
-          // a player who scored exactly 10 every game) and so the
-          // candidate grid stays meaningfully spread.
-          const sigma = Math.max(rawSigma, Math.abs(mu) * 0.1, 0.5);
-          const actualValue = values[i];
+    // Shared stub score. Calibration fit and test evaluation only read
+    // `stat`/`oddsType`/`predictedPMore`/`hit`, so the `score` object's contents
+    // are never used downstream. Pointing every pick at one frozen instance
+    // (instead of allocating a fresh object per pick) removes tens of millions
+    // of allocations — the single biggest heap saving for large sports.
+    const sharedStubScore: ScoreOutput = {
+      pMore: 0.5, pLess: 0.5, baselineProjection: 0, projection: 0, sigma: 1, sampleSize: 0,
+    };
 
-          for (const k of SIGMA_OFFSETS) {
-            const rawLine = mu + k * sigma;
-            const line = Math.round(rawLine * 2) / 2;
-            const z = (line - mu) / sigma;
-            // pMore = P(value > line) under N(mu, sigma).
-            const pMoreRaw = 1 - cdfNormal(z);
-            const pMore = Math.min(0.95, Math.max(0.05, pMoreRaw));
+    // Pass 2 — walk-forward pick generation, bounded by PICK_CAP.
+    let capped = false;
+    for (const { stat, values } of series) {
+      if (capped) break;
+      // Index that divides train (earlier games) from test (latest games).
+      // cutoff counts from WARMUP since that's the first predictable game.
+      const cutoff =
+        WARMUP + Math.floor((values.length - WARMUP) * (1 - TEST_FRACTION));
 
-            const stubScore: ScoreOutput = {
-              pMore,
-              pLess: 1 - pMore,
-              baselineProjection: mu,
-              projection: mu,
-              sigma,
-              sampleSize: past.length,
-            };
-            const pick: ScoredPick = {
-              stat,
-              oddsType: "standard",
-              side: "more",
-              predictedPMore: pMore,
-              hit: actualValue > line,
-              line,
-              actualValue,
-              score: stubScore,
-            };
-            (i < cutoff ? trainPicks : testPicks).push(pick);
-          }
+      // Walk-forward: for each game i ≥ WARMUP, compute rolling mean/std
+      // from [0..i-1] (strictly past), then sample a grid of candidate
+      // lines around that mean. Each candidate becomes one pick.
+      for (let i = WARMUP; i < values.length; i++) {
+        const past = values.slice(0, i);
+        const mu = past.reduce((a, b) => a + b, 0) / past.length;
+        const variance =
+          past.reduce((a, b) => a + (b - mu) ** 2, 0) / past.length;
+        const rawSigma = Math.sqrt(variance);
+        // Floor sigma so we don't divide by zero on tight stats (e.g.
+        // a player who scored exactly 10 every game) and so the
+        // candidate grid stays meaningfully spread.
+        const sigma = Math.max(rawSigma, Math.abs(mu) * 0.1, 0.5);
+        const actualValue = values[i];
+        const bucket = i < cutoff ? trainPicks : testPicks;
+
+        for (const k of SIGMA_OFFSETS) {
+          const rawLine = mu + k * sigma;
+          const line = Math.round(rawLine * 2) / 2;
+          const z = (line - mu) / sigma;
+          // pMore = P(value > line) under N(mu, sigma).
+          const pMoreRaw = 1 - cdfNormal(z);
+          const pMore = Math.min(0.95, Math.max(0.05, pMoreRaw));
+
+          bucket.push({
+            stat,
+            oddsType: "standard",
+            side: "more",
+            predictedPMore: pMore,
+            hit: actualValue > line,
+            line,
+            actualValue,
+            score: sharedStubScore,
+          });
         }
       }
+      if (trainPicks.length + testPicks.length >= PICK_CAP) capped = true;
     }
 
     const totalPicks = trainPicks.length + testPicks.length;

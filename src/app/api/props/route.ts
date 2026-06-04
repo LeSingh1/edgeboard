@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { impliedProbability } from "@/lib/projectionModel";
+import { applyCachedPricing, warmBoardPricing } from "@/lib/boardPricing";
 import type { OddsType, Prop } from "@/lib/types";
 
 export const revalidate = 300; // ISR: refresh every 5 min
@@ -260,6 +261,31 @@ function parseProjections(body: JsonApiResponse): CachedPayload {
   };
 }
 
+/**
+ * Serve a board payload with real-model pricing layered on.
+ *
+ * Enriches each prop from the boardPricing cache (cache HIT → trained-model
+ * pMore/pLess + real modelVersion; MISS → the implied fallback already on the
+ * prop), attaches a `pricing` summary the UI can surface ("N / M priced by
+ * model"), then schedules a fire-and-forget warm of still-unpriced props via
+ * `after()` so the NEXT fetch upgrades them. See boardPricing.ts for the full
+ * rationale (this is the fix for the demon-bias from constant implied pricing).
+ */
+function servePriced(
+  payload: CachedPayload,
+  extra: Record<string, unknown> = {},
+  headers?: Record<string, string>,
+): NextResponse {
+  const { props, pricedByModel, total } = applyCachedPricing(payload.props);
+  // Runs AFTER the response is flushed — keeps the request fast while the
+  // board converges to real pricing in the background.
+  after(() => warmBoardPricing(payload.props));
+  return NextResponse.json(
+    { ...payload, ...extra, props, pricing: { modelPriced: pricedByModel, total } },
+    headers ? { headers } : undefined,
+  );
+}
+
 export async function GET() {
   try {
     const res = await fetchPP();
@@ -267,24 +293,18 @@ export async function GET() {
     if (!res.ok) {
       // PrizePicks unhappy. Common cases: 429 (rate-limited — they limit
       // hard from cloud IPs), 5xx (their own incident), or 403 (UA block).
-      // If we have a previous good snapshot, serve it stale so the user
-      // doesn't see a black screen. The `stale: true` flag tells the UI
-      // it's looking at cached data; HTTP status stays 200 because the
-      // payload IS usable, just slightly old.
+      // If we have a previous good snapshot, serve it stale (still priced
+      // from the warm cache) so the user doesn't see a black screen. The
+      // `stale: true` flag tells the UI it's looking at cached data; HTTP
+      // status stays 200 because the payload IS usable, just slightly old.
       if (lastGood) {
         const ageSec = Math.max(0, Math.round((Date.now() - new Date(lastGood.fetchedAt).getTime()) / 1000));
-        return NextResponse.json(
-          {
-            ...lastGood,
-            stale: true,
-            upstreamStatus: res.status,
-            staleAgeSec: ageSec,
-          },
-          {
-            // Short browser cache so clients retry soon and we pick up
-            // PP's recovery on the next refresh.
-            headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
-          },
+        return servePriced(
+          lastGood,
+          { stale: true, upstreamStatus: res.status, staleAgeSec: ageSec },
+          // Short browser cache so clients retry soon and we pick up PP's
+          // recovery on the next refresh.
+          { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
         );
       }
       // No prior snapshot to fall back on — return the original 502 so
@@ -300,19 +320,18 @@ export async function GET() {
     // Stash for the stale-fallback path so a future PP 429/403 has something
     // to serve instead of an empty board.
     lastGood = payload;
-    return NextResponse.json(payload, {
-      headers: {
-        "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
-      },
+    return servePriced(payload, {}, {
+      "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600",
     });
   } catch (err) {
     // Network-level failure (DNS, timeout, TLS). Same logic: if we have a
     // previous good snapshot, serve it stale instead of going dark.
     if (lastGood) {
       const ageSec = Math.max(0, Math.round((Date.now() - new Date(lastGood.fetchedAt).getTime()) / 1000));
-      return NextResponse.json(
-        { ...lastGood, stale: true, upstreamError: String(err), staleAgeSec: ageSec },
-        { headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" } },
+      return servePriced(
+        lastGood,
+        { stale: true, upstreamError: String(err), staleAgeSec: ageSec },
+        { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60" },
       );
     }
     return NextResponse.json(
@@ -375,6 +394,9 @@ export async function POST(req: Request) {
     }
     const payload = parseProjections(body);
     lastGood = payload;
+    // Warm real-model pricing for the freshly seeded board so the next GET
+    // serves trained-model probabilities instead of implied fallbacks.
+    after(() => warmBoardPricing(payload.props));
     return NextResponse.json(
       {
         ok: true,

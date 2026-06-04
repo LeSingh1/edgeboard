@@ -87,6 +87,10 @@ export interface Lineup {
     probability: number;
   }[];
   hitProbability: number;
+  /** Probability the lineup returns more than its entry — a real profit.
+   *  For Flex this excludes the bottom "cashes but loses" tier (e.g. 3/5 →
+   *  0.4×). Populated by the optimizer; optional for hand-built lineups. */
+  probProfit?: number;
   expectedValue: number;
   grossPayout: number;
   netProfit: number;

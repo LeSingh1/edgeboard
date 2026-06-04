@@ -11,19 +11,29 @@ const MAX_GAMES = 4000;
 
 const gamelogCache = new Map<string, RawGame[]>();
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 function cellsOf(rowHtml: string): string[] {
   return [...rowHtml.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g)]
     .map((m) => m[1].replace(/<[^>]+>/g, "").replace(/&nbsp;/g, "").replace(/　/g, "").trim());
 }
 
-async function fetchText(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+// npb.jp throttles the sustained ~4000-request scrape: after a burst it starts
+// returning 403/429/5xx. The old version swallowed those to null, so a single
+// throttled stretch zeroed out the whole run. Now we retry transient failures
+// with exponential backoff and only give up (null) on a genuine 404.
+async function fetchText(url: string, attempts = 5): Promise<string | null> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      if (res.ok) return await res.text();
+      if (res.status === 404) return null;          // genuine miss — don't retry
+      await sleep(Math.min(15000, 800 * 2 ** i));    // 0.8→1.6→3.2→6.4→12.8s
+    } catch {
+      await sleep(Math.min(15000, 800 * 2 ** i));    // network blip — back off
+    }
   }
+  return null;
 }
 
 /** Pull the per-game box score base paths (e.g. /scores/2024/0329/g-t-01/) for a month. */
@@ -69,6 +79,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
       const paths = await boxPathsForMonth(season, month);
       for (const path of paths) {
         if (games >= MAX_GAMES) break outer;
+        await sleep(60);   // light pacing so we don't trip npb.jp's burst throttle
         const html = await fetchText(`${BASE}${path}box.html`);
         if (!html) continue;
         // gameDate from the path: /scores/YYYY/MMDD/...

@@ -458,11 +458,24 @@ function CalibrationToggleCard() {
 
 interface TrainingStatusResp {
   currentlyRunning: boolean;
+  totalSampleSize: number;
+  totalTrainSampleSize: number;
+  totalTestSampleSize: number;
   perSport: Record<string, {
     lastRunAt: string | null;
     ageHours: number | null;
     freshness: "fresh" | "stale" | "missing";
+    sampleSize: number;
+    trainSampleSize: number;
+    testSampleSize: number;
   }>;
+}
+
+/** Compact human count: 60_158_707 → "60.2M", 11_176_368 → "11.2M". */
+function fmtCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 function TrainingHealthPanel() {
@@ -480,14 +493,39 @@ function TrainingHealthPanel() {
         Training health{" "}
         {data.currentlyRunning && <span className="text-[#FFE600]">· running now</span>}
       </h3>
+
+      {/* Aggregate training-data totals across every sport. */}
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="rounded-xl border-4 border-[#00F5D4] p-3 text-center">
+          <div className="text-white/60 text-[10px] uppercase tracking-widest font-bold">Total samples</div>
+          <div className="font-[family-name:var(--font-display)] text-3xl mt-1 text-[#00F5D4]">
+            {fmtCount(data.totalSampleSize)}
+          </div>
+        </div>
+        <div className="rounded-xl border-4 border-[#FFE600] p-3 text-center">
+          <div className="text-white/60 text-[10px] uppercase tracking-widest font-bold">Train</div>
+          <div className="font-[family-name:var(--font-display)] text-3xl mt-1 text-[#FFE600]">
+            {fmtCount(data.totalTrainSampleSize)}
+          </div>
+        </div>
+        <div className="rounded-xl border-4 border-[#FF6B6B] p-3 text-center">
+          <div className="text-white/60 text-[10px] uppercase tracking-widest font-bold">Test</div>
+          <div className="font-[family-name:var(--font-display)] text-3xl mt-1 text-[#FF6B6B]">
+            {fmtCount(data.totalTestSampleSize)}
+          </div>
+        </div>
+      </div>
+
       <ul className="space-y-1 text-sm">
         {Object.entries(data.perSport).map(([sport, s]) => {
           const dot = s.freshness === "fresh" ? "🟢" : s.freshness === "stale" ? "🟡" : "🔴";
           const age = s.ageHours == null ? "never trained" : `${s.ageHours.toFixed(1)}h ago`;
           return (
-            <li key={sport} className="flex justify-between">
+            <li key={sport} className="flex justify-between gap-2">
               <span>{dot} {sport}</span>
-              <span className="text-white/60">{age}</span>
+              <span className="text-white/60">
+                <span className="text-white/80 font-bold">{fmtCount(s.sampleSize)}</span> · {age}
+              </span>
             </li>
           );
         })}

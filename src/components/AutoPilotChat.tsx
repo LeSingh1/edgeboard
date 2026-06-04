@@ -43,12 +43,14 @@ interface PlanOption {
   lineupCount: number;
   lineupSize: number;
   lineups: Lineup[];
-  /** Expected gross dollar return summed across all proposed lineups. */
+  /** Real expected gross dollar return summed across lineups — from each
+   *  lineup's true per-tier EV, NOT pAny × jackpot (the old overstatement). */
   expectedReturn: number;
-  /** Probability that AT LEAST ONE lineup in the plan hits its payout tier. */
-  probAtLeastOneWins: number;
-  /** Probability all lineups hit their payout tier. */
-  probAllWin: number;
+  /** Probability AT LEAST ONE lineup returns a real profit (excludes the Flex
+   *  bottom tier that cashes but still loses money). */
+  probAtLeastOneProfits: number;
+  /** Probability every lineup returns a real profit. */
+  probAllProfit: number;
   /** Sum of all stakes (caps the budget). */
   totalStake: number;
 }
@@ -104,7 +106,16 @@ function parseBudget(message: string): number | null {
 type Intent = "safe" | "lottery" | "balanced";
 function parseIntent(message: string): Intent {
   const m = message.toLowerCase();
-  if (/\b(safe|safer|conservative|low risk|hit|cash|guaranteed|grind)\b/.test(m)) return "safe";
+  // "Guaranteed / sure / profit / safe" all map to SAFE. We enumerate the
+  // common misspellings of "guaranteed" (gauranteed, gaurenteed, garunteed,
+  // garanteed) plus a loose g…r…teed catch — someone asking for a "guaranteed
+  // win" wants the safest plan, not the lottery. ("win big" stays lottery.)
+  if (
+    /\b(safe|safer|safest|conservative|low risk|hit|cash|grind|profit|sure|lock|guarantee|guaranteed|gauranteed|gaurenteed|garanteed|garunteed|gaurteed)\b/.test(m) ||
+    /\bg[au]{1,3}r\w*te+d\b/.test(m)
+  ) {
+    return "safe";
+  }
   if (/\b(big|lottery|moonshot|max payout|huge|swing|all in|win big|cash out)\b/.test(m)) return "lottery";
   return "balanced";
 }
@@ -134,9 +145,15 @@ function buildPlan(
   });
   const lineups = r.lineups.filter((l) => l.picks.length === lineupSize);
   if (lineups.length === 0) return null;
-  const expectedReturn = lineups.reduce((s, l) => s + l.hitProbability * l.grossPayout, 0);
-  const probAllWin = lineups.reduce((p, l) => p * l.hitProbability, 1);
-  const probNoneWin = lineups.reduce((p, l) => p * (1 - l.hitProbability), 1);
+  // Real expected gross return: each lineup's true EV (already net of its own
+  // entry) plus that entry back. Uses the optimizer's correct per-tier EV
+  // instead of the old `hitProbability × top-tier payout`, which pretended
+  // every partial Flex cash paid the jackpot and massively overstated returns.
+  const expectedReturn = lineups.reduce((s, l) => s + (l.expectedValue + l.entryCost), 0);
+  // Honest profit odds: probProfit excludes the Flex tier that cashes but loses.
+  const pProfit = (l: Lineup) => l.probProfit ?? l.hitProbability;
+  const probAllProfit = lineups.reduce((p, l) => p * pProfit(l), 1);
+  const probNoneProfit = lineups.reduce((p, l) => p * (1 - pProfit(l)), 1);
   return {
     label,
     rationale,
@@ -145,8 +162,8 @@ function buildPlan(
     lineupSize,
     lineups,
     expectedReturn,
-    probAtLeastOneWins: 1 - probNoneWin,
-    probAllWin,
+    probAtLeastOneProfits: 1 - probNoneProfit,
+    probAllProfit,
     totalStake: entryCost * lineups.length,
   };
 }
@@ -221,28 +238,33 @@ function generatePlans(props: Prop[], budget: number, intent: Intent, real: Reco
 /** Pick the recommended option based on user's intent. */
 function pickRecommended(plans: PlanOption[], intent: Intent): PlanOption | null {
   if (plans.length === 0) return null;
-  if (intent === "safe") {
-    return plans.find((p) => p.label === "Safe split") ?? plans[0];
-  }
   if (intent === "lottery") {
     return plans.find((p) => p.label === "Lottery") ?? plans[plans.length - 1];
   }
-  // Balanced: maximize expected return, fall back to safe if no balanced.
-  return [...plans].sort((a, b) => b.expectedReturn - a.expectedReturn)[0];
+  if (intent === "safe") {
+    // Highest REAL chance of actually turning a profit — the honest answer to
+    // "give me a guaranteed win" (nothing is truly guaranteed; this is closest).
+    return [...plans].sort((a, b) => b.probAtLeastOneProfits - a.probAtLeastOneProfits)[0];
+  }
+  // Balanced: best REAL expected value (net of stake). Now that EV is honest,
+  // this no longer auto-crowns the lottery via the old pAny × jackpot bug.
+  return [...plans].sort(
+    (a, b) => (b.expectedReturn - b.totalStake) - (a.expectedReturn - a.totalStake),
+  )[0];
 }
 
 function summarizePlan(plan: PlanOption): string {
   const ev = plan.expectedReturn - plan.totalStake;
-  const pPct = (plan.probAtLeastOneWins * 100).toFixed(0);
+  const profitPct = (plan.probAtLeastOneProfits * 100).toFixed(0);
   const evSign = ev >= 0 ? "+" : "";
   const perSlip = plan.lineups[0]?.grossPayout ?? 0;
   const perSlipLabel = plan.lineupCount > 1
-    ? `Each slip pays $${perSlip.toFixed(0)} if it hits.`
-    : `Pays $${perSlip.toFixed(0)} if it hits.`;
+    ? `Best case each slip pays $${perSlip.toFixed(0)}.`
+    : `Best case it pays $${perSlip.toFixed(0)}.`;
   return (
     `${plan.lineupCount}× ${plan.lineupSize}-pick at $${plan.entryCost.toFixed(2)} each. ` +
     `${perSlipLabel} ` +
-    `Hits at least once ~${pPct}% of the time (${evSign}$${ev.toFixed(2)} EV across all slips).`
+    `~${profitPct}% chance at least one slip actually profits; real expected value ${evSign}$${ev.toFixed(2)} across all slips.`
   );
 }
 
@@ -460,7 +482,7 @@ function PlanCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-xs text-white/50">{plan.lineupCount > 1 ? "Per slip" : "If lands"}</div>
+          <div className="text-xs text-white/50">{plan.lineupCount > 1 ? "Top / slip" : "Best case"}</div>
           <div className="text-base font-bold text-[#FFE600]">
             ${plan.lineups[0]?.grossPayout.toFixed(0) ?? "0"}
           </div>
@@ -475,10 +497,10 @@ function PlanCard({
       {expanded && (
         <div className="px-3 pb-3 border-t border-white/10 pt-2 text-[11px] text-white/60 space-y-2">
           <div>
-            P(at least one cashes): <span className="text-white font-bold">{(plan.probAtLeastOneWins * 100).toFixed(1)}%</span>
+            Chance ≥1 slip profits: <span className="text-white font-bold">{(plan.probAtLeastOneProfits * 100).toFixed(1)}%</span>
             {plan.lineupCount > 1 && (
               <>
-                {" · "}P(all cash): <span className="text-white font-bold">{(plan.probAllWin * 100).toFixed(1)}%</span>
+                {" · "}all profit: <span className="text-white font-bold">{(plan.probAllProfit * 100).toFixed(1)}%</span>
               </>
             )}
           </div>
@@ -491,7 +513,7 @@ function PlanCard({
               >
                 <summary className="px-2.5 py-1.5 cursor-pointer flex items-center justify-between text-xs text-white/80">
                   <span>
-                    Lineup #{i + 1} · {l.picks.length}-pick {l.playType} · {(l.hitProbability * 100).toFixed(1)}% hit
+                    Lineup #{i + 1} · {l.picks.length}-pick {l.playType} · {((l.probProfit ?? l.hitProbability) * 100).toFixed(1)}% profit
                   </span>
                   <span className="font-mono text-[#FFE600]">
                     ${l.grossPayout.toFixed(0)}
@@ -580,9 +602,9 @@ function respond(
 
   const intentNote =
     intent === "safe"
-      ? " You asked to play it safe, so I'm leading with the Safe split."
+      ? " Straight up: no PrizePicks play is a guaranteed profit — every entry carries the house edge, so spreading across the board can't make a sure thing. This is just the plan with the best real shot at ending the day ahead."
       : intent === "lottery"
-        ? " You asked for the big swing, so I'm leading with the Lottery."
+        ? " You asked for the big swing, so I'm leading with the Lottery — lowest odds, biggest payout."
         : "";
 
   const text =

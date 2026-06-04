@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw, Bookmark } from "lucide-react";
+import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw, Bookmark, AlertTriangle } from "lucide-react";
 import { PropBox } from "@/components/PropBox";
 import { SeedBoardPanel } from "@/components/SeedBoardPanel";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -29,6 +29,14 @@ interface ApiResponse {
   leagues: LeagueSummary[];
   total: number;
   fetchedAt: string;
+  // Present when the route fell back to its in-memory snapshot because
+  // PrizePicks rate-limited (429) or errored. The board is still usable
+  // but lines/odds — and which players are even on the slate — may be
+  // minutes-to-hours old. UI surfaces this so the user knows to seed.
+  stale?: boolean;
+  staleAgeSec?: number;
+  upstreamStatus?: number;
+  upstreamError?: string;
 }
 
 interface LiveStatsResponse {
@@ -231,6 +239,23 @@ export default function LiveBoardPage() {
     ? new Date(data.fetchedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
     : "—";
 
+  // PP rate-limit fallback: the route returned its cached snapshot, so the
+  // visible board may be missing players that have since been added to the
+  // slate. Surface this in the hero and pulse the Seed Board CTA — without
+  // it the UI looks fully healthy and the user can't tell why a player
+  // they see in their PP app isn't here.
+  const isStale = Boolean(data?.stale);
+  const staleAgeLabel = (() => {
+    if (!isStale) return null;
+    const sec = data?.staleAgeSec;
+    if (typeof sec !== "number" || !isFinite(sec) || sec <= 0) return "stale";
+    if (sec < 60) return `${sec}s old`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min} min old`;
+    const hr = Math.round(min / 60);
+    return `${hr}h old`;
+  })();
+
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
       {/* Hero */}
@@ -252,6 +277,19 @@ export default function LiveBoardPage() {
                   ? `Couldn't reach PrizePicks: ${error}`
                   : `${filteredProps.length.toLocaleString()} props live · last refresh ${fetchedAtLabel}`}
             </p>
+            {isStale && !loading && !error && (
+              <button
+                type="button"
+                onClick={() => setSeedOpen(true)}
+                className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border-[3px] border-[#FFE600] bg-[#FFE600]/15 text-[#FFE600] font-[family-name:var(--font-heading)] font-black uppercase text-[10px] tracking-widest animate-pulse hover:bg-[#FFE600]/25 transition-colors"
+                aria-label="Board data is stale — open seed board"
+              >
+                <AlertTriangle size={12} strokeWidth={3} />
+                <span>
+                  Stale{staleAgeLabel ? ` · ${staleAgeLabel}` : ""} · PrizePicks rate-limited · seed to refresh
+                </span>
+              </button>
+            )}
             <p className="text-white/40 text-xs mt-1 uppercase tracking-widest font-bold">
               Personal analytics · not affiliated with PrizePicks ·
               <span className="text-[#4ADE80]"> Edge</span> badge = % computed from player&apos;s game log ·
@@ -274,13 +312,15 @@ export default function LiveBoardPage() {
               </span>
             </button>
             {/* Seed-board button — pulses yellow when the board fetch errors
-                (PerimeterX is blocking us) since seeding is the user's path
-                back. Stays available as a discreet always-on tool otherwise. */}
+                (PerimeterX is blocking us) OR when the route is serving its
+                cached snapshot because PP rate-limited. In both cases the
+                fresh feed is unreachable and seeding is the user's path back.
+                Stays available as a discreet always-on tool otherwise. */}
             <button
               onClick={() => setSeedOpen(true)}
               className={cn(
                 "flex items-center gap-2 px-4 py-3 rounded-2xl border-4 border-dashed transition-colors",
-                error
+                error || isStale
                   ? "border-[#FFE600] bg-[#FFE600]/15 text-[#FFE600] animate-pulse"
                   : "border-white/20 bg-[#2D1B4E]/60 text-white/60 hover:text-[#FFE600] hover:border-[#FFE600]/60",
               )}
