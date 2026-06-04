@@ -13,6 +13,7 @@ import {
   Layers,
   Sliders,
   Filter,
+  Wallet,
   Loader2,
   AlertTriangle,
   Wand2,
@@ -25,13 +26,13 @@ import { useLineupStore } from "@/stores/lineupStore";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { OddsBadge } from "@/components/OddsBadge";
-import { AnimatedPercent } from "@/components/AnimatedPercent";
 import { PlayerDetailModal } from "@/components/PlayerDetailModal";
 import { AutoPilotChat } from "@/components/AutoPilotChat";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { LeagueSummary, PickSide, Prop } from "@/lib/types";
 
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
+const MAX_SPEND_PRESETS = [10, 25, 50, 100, 200] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
 const LINEUP_COUNTS = [1, 2, 3, 4, 5] as const;
 
@@ -93,6 +94,9 @@ export default function AutoPilotPage() {
   const [lineupCount, setLineupCount] = useState<AutoOr<number>>("auto");
   const [lineupSize, setLineupSize] = useState<AutoOr<number>>("auto");
   const [entry, setEntry] = useState<AutoOr<number>>("auto");
+  // Max total spend cap. "auto" = no cap. When set, the build trims the
+  // number of lineups so (count × entry) never exceeds it.
+  const [maxSpend, setMaxSpend] = useState<AutoOr<number>>("auto");
   const [sport, setSport] = useState<AutoOr<string>>("auto");
   const [crunching, setCrunching] = useState(false);
   const [result, setResult] = useState<AutoPilotResult | null>(null);
@@ -114,12 +118,14 @@ export default function AutoPilotPage() {
     lineupCount === "auto" &&
     lineupSize === "auto" &&
     entry === "auto" &&
+    maxSpend === "auto" &&
     sport === "auto";
 
   const setAllAuto = () => {
     setLineupCount("auto");
     setLineupSize("auto");
     setEntry("auto");
+    setMaxSpend("auto");
     setSport("auto");
   };
 
@@ -162,6 +168,30 @@ export default function AutoPilotPage() {
     return [{ name: "ALL", count: board.total }, ...board.leagues.slice(0, 8)];
   }, [board]);
 
+  // ── Spend math ─────────────────────────────────────────────────────────
+  // Total spend = lineups × per-slip entry. The Max Spend cap (when set) trims
+  // the lineup count so we never exceed it; if even one slip can't fit under
+  // the cap, the build is blocked. Resolves "auto" knobs to their defaults so
+  // the panel always shows a concrete dollar figure.
+  const spend = useMemo(() => {
+    const effCount = lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount;
+    const effEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
+    const cap = maxSpend === "auto" ? null : maxSpend;
+    const fitCount = cap != null ? Math.floor(cap / effEntry) : effCount;
+    const cantFit = cap != null && fitCount < 1;
+    const finalCount = cap != null ? Math.max(0, Math.min(effCount, fitCount)) : effCount;
+    return {
+      effCount,
+      effEntry,
+      cap,
+      plannedTotal: effCount * effEntry,
+      finalCount,
+      finalTotal: finalCount * effEntry,
+      trimmed: cap != null && finalCount < effCount && !cantFit,
+      cantFit,
+    };
+  }, [lineupCount, entry, maxSpend]);
+
   const handleGenerate = async () => {
     if (!board || crunching) return;
     setCrunching(true);
@@ -183,11 +213,24 @@ export default function AutoPilotPage() {
       realProjections: byProp,
       teamAllowlist: allowlist,
     };
+    // Resolve entry + count, then apply the Max Spend cap by trimming the
+    // lineup count so count × entry never exceeds it.
+    const baseEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
+    const baseCount = lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount;
+    const cap = maxSpend === "auto" ? null : maxSpend;
+    const cappedCount =
+      cap != null ? Math.max(0, Math.min(baseCount, Math.floor(cap / baseEntry))) : baseCount;
+    // Guard: per-slip entry alone exceeds the cap — nothing fits, so bail
+    // (the Build button is disabled in this state; this is belt-and-suspenders).
+    if (cappedCount < 1) {
+      setCrunching(false);
+      return;
+    }
     const resolved = {
-      lineupCount: lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount,
+      lineupCount: cappedCount,
       lineupSize:
         lineupSize === "auto" ? pickAutoSize(board.props, optionsForSizing) : lineupSize,
-      entry: entry === "auto" ? AUTO_ENTRY_DEFAULT : entry,
+      entry: baseEntry,
       sport: resolvedSport,
     };
 
@@ -465,6 +508,64 @@ export default function AutoPilotPage() {
             )}
           </ControlCard>
 
+          <ControlCard title="Max spend" icon={Wallet} accent="#4ADE80" accent2="#00F5D4">
+            <div className="flex flex-wrap gap-3 items-center">
+              <AutoPill
+                active={maxSpend === "auto"}
+                accent="#4ADE80"
+                onClick={() => setMaxSpend("auto")}
+              />
+              {MAX_SPEND_PRESETS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setMaxSpend(p)}
+                  className={cn(
+                    "px-5 h-12 rounded-full border-4 font-[family-name:var(--font-heading)] font-black text-lg transition-all",
+                    p === maxSpend
+                      ? "bg-[#4ADE80] border-[#00F5D4] text-[#0D0D1A] shadow-[2px_2px_0_#00F5D4]"
+                      : "border-[#4ADE80] text-[#4ADE80] hover:bg-[#4ADE80]/15",
+                  )}
+                >
+                  ${p}
+                </button>
+              ))}
+              <input
+                type="number"
+                value={maxSpend === "auto" ? "" : maxSpend}
+                placeholder="No cap"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setMaxSpend("auto");
+                    return;
+                  }
+                  setMaxSpend(Math.max(1, Math.min(10000, Number(v) || 0)));
+                }}
+                className="w-24 h-12 rounded-full border-4 border-dashed border-[#4ADE80] bg-transparent px-3 font-[family-name:var(--font-heading)] font-black text-center text-white placeholder:text-white/30 focus:outline-none focus:bg-[#4ADE80]/10"
+              />
+            </div>
+            <p className="text-white/55 text-xs mt-3">
+              {maxSpend === "auto" ? (
+                <>Auto — no cap. You spend lineups × entry (${spend.plannedTotal} right now).</>
+              ) : spend.cantFit ? (
+                <span className="text-[#F87171]">
+                  ${maxSpend} cap is below the ${spend.effEntry} per-slip entry — lower the entry
+                  or raise the cap.
+                </span>
+              ) : spend.trimmed ? (
+                <>
+                  ${maxSpend} cap — trimmed to{" "}
+                  <span className="text-[#4ADE80] font-bold">
+                    {spend.finalCount} {spend.finalCount === 1 ? "slip" : "slips"}
+                  </span>{" "}
+                  so total stays ${spend.finalTotal}.
+                </>
+              ) : (
+                <>${maxSpend} cap — current plan fits (${spend.plannedTotal} total).</>
+              )}
+            </p>
+          </ControlCard>
+
           {leagueOptions.length > 1 && (
             <ControlCard title="Sport filter" icon={Filter} accent="#7B2FFF" accent2="#00F5D4">
               <div className="flex flex-wrap gap-2 items-center">
@@ -539,6 +640,42 @@ export default function AutoPilotPage() {
                 )}{" "}
                 entry
               </div>
+
+              {/* Total spend — the number the page used to hide. Reflects the
+                  Max Spend cap: shows the capped total, with the pre-cap amount
+                  struck alongside when we trimmed lineups to fit. */}
+              <div className="mt-3 pt-3 border-t border-white/15">
+                <div className="text-white/70 text-[10px] uppercase tracking-widest font-bold">
+                  Total spend
+                </div>
+                <div className="flex items-baseline gap-2 mt-0.5">
+                  <span
+                    className={cn(
+                      "font-[family-name:var(--font-display)] text-4xl leading-none",
+                      spend.cantFit ? "text-[#F87171]" : "text-[#4ADE80]",
+                    )}
+                  >
+                    ${spend.finalTotal}
+                  </span>
+                  {spend.trimmed && (
+                    <span className="text-white/40 text-xs line-through">${spend.plannedTotal}</span>
+                  )}
+                </div>
+                <div className="text-white/45 text-[10px] mt-1">
+                  {spend.cantFit ? (
+                    <span className="text-[#F87171]">
+                      ${spend.effEntry} entry exceeds the ${spend.cap} cap
+                    </span>
+                  ) : (
+                    <>
+                      {spend.finalCount} {spend.finalCount === 1 ? "slip" : "slips"} × $
+                      {spend.effEntry}
+                      {spend.cap != null && <> · cap ${spend.cap}</>}
+                    </>
+                  )}
+                </div>
+              </div>
+
               <div className="text-white/50 text-[10px] uppercase tracking-widest font-bold mt-3">
                 Sport ·{" "}
                 {sport === "auto" ? (
@@ -551,7 +688,7 @@ export default function AutoPilotPage() {
 
             <button
               onClick={handleGenerate}
-              disabled={crunching || !board}
+              disabled={crunching || !board || spend.cantFit}
               className={cn(
                 "w-full h-16 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4]",
                 "font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-lg",
@@ -572,9 +709,11 @@ export default function AutoPilotPage() {
               )}
               {crunching
                 ? "Hunting picks..."
-                : allAuto
-                  ? "Surprise me"
-                  : "Build my lineups"}
+                : spend.cantFit
+                  ? "Over budget"
+                  : allAuto
+                    ? "Surprise me"
+                    : "Build my lineups"}
             </button>
             <p className="text-center text-white/50 text-xs">
               Ranked by chance to hit · ties broken by avg $ per play.
@@ -807,10 +946,14 @@ function LineupCard({
 }) {
   const accent = accentHexFor(index);
   const accent2 = accentHexFor(index + 2);
+  // Honest "chance you actually profit" — excludes the Flex bottom tier that
+  // cashes but still loses money (e.g. 3/5 → 0.4×). Equals hitProbability for
+  // Power (all-or-nothing); falls back to it for any lineup without the field.
+  const profitProb = lineup.probProfit ?? lineup.hitProbability;
   const pctColor =
-    lineup.hitProbability >= 0.25
+    profitProb >= 0.25
       ? "#4ADE80"
-      : lineup.hitProbability >= 0.10
+      : profitProb >= 0.10
         ? "#FFE600"
         : "#F87171";
   const evColor = lineup.expectedValue >= 0 ? "#4ADE80" : "#F87171";
@@ -858,8 +1001,13 @@ function LineupCard({
         {/* Mobile: 3-column stat strip below the title. Desktop: each Stat
             lands in its own grid column thanks to the `md:contents` above. */}
         <div className="grid grid-cols-3 gap-2 md:contents">
-          <Stat label="Hit %" accent={pctColor}>
-            <AnimatedPercent value={lineup.hitProbability} decimals={1} className="font-[family-name:var(--font-display)] text-2xl md:text-4xl leading-none" />
+          <Stat label="Profit %" accent={pctColor}>
+            <span
+              style={{ color: pctColor }}
+              className="font-[family-name:var(--font-display)] text-2xl md:text-4xl leading-none"
+            >
+              {(profitProb * 100).toFixed(1)}%
+            </span>
           </Stat>
           <Stat label="Avg $" accent={evColor}>
             <span style={{ color: evColor }} className="font-[family-name:var(--font-display)] text-2xl md:text-4xl leading-none">
@@ -983,8 +1131,8 @@ function CopyPicksButton({
       return `${i + 1}. ${p.prop.playerName} — ${p.prop.statType} ${side} ${p.prop.line}${oddsTag} · ${pct}`;
     });
     const sizeLabel = `${lineup.picks.length}-pick ${lineup.playType === "power" ? "Power" : "Flex"}`;
-    const hit = `${(lineup.hitProbability * 100).toFixed(1)}% hit`;
-    const pays = `$${lineup.grossPayout.toFixed(0)} if it lands`;
+    const hit = `${((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}% profit chance`;
+    const pays = `$${lineup.grossPayout.toFixed(0)} best case`;
     return `${pickLines.join("\n")}\n\n${sizeLabel} · ${hit} · ${pays} · $${entry} entry`;
   })();
 

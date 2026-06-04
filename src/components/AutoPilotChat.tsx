@@ -120,6 +120,21 @@ function parseIntent(message: string): Intent {
   return "balanced";
 }
 
+/** Pull an explicit lineup count out of "give me 3 lineups", "3 slips",
+ *  "make 4 plays", etc. Only matches lineup-nouns (lineups / slips / plays /
+ *  entries / tickets / boards) so it never grabs the budget number or a
+ *  pick-size like "3-pick". Returns null when no count is requested. */
+function parseLineupCount(message: string): number | null {
+  const match = message
+    .toLowerCase()
+    .match(/(\d+)\s*(?:lineups?|slips?|plays?|entries|entry|tickets?|boards?)\b/);
+  if (match) {
+    const n = Number(match[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 12) return n;
+  }
+  return null;
+}
+
 /**
  * Build a single plan: K lineups of the same size, each at the same entry.
  *
@@ -584,6 +599,47 @@ function respond(
       text:
         "PrizePicks won't take an entry under $1. Bump the budget to at least $1 and I'll build the plan.",
     };
+  }
+
+  // Honor an explicit lineup count ("give me 3 lineups"). Split the budget
+  // evenly across that many slips (>= $1 each) and build exactly that many,
+  // diversified. Falls through to the Safe/Balanced/Lottery options if the
+  // board is too thin to fill them.
+  const requestedCount = parseLineupCount(message);
+  if (requestedCount !== null) {
+    const maxAffordable = Math.floor(budget); // PrizePicks $1-per-slip minimum
+    const count = Math.max(1, Math.min(requestedCount, maxAffordable));
+    const entryEach = Math.max(1, Math.floor((budget / count) * 100) / 100);
+    const size = intent === "safe" ? 3 : intent === "lottery" ? 5 : 4;
+    const plan = buildPlan(
+      `${count} lineups`,
+      `${count} lineups at $${entryEach.toFixed(2)} each, ${size}-pick.`,
+      props,
+      entryEach,
+      size,
+      count,
+      projections,
+    );
+    if (plan) {
+      const got = plan.lineupCount;
+      const shortNote =
+        got < requestedCount
+          ? ` (You asked for ${requestedCount}; the board could only fund ${got} distinct ${got === 1 ? "slip" : "slips"} at $${entryEach.toFixed(2)} / the $1 minimum.)`
+          : "";
+      const text =
+        `Here ${got === 1 ? "is" : "are"} ${got} ${got === 1 ? "lineup" : "lineups"} on your ` +
+        `$${budget.toFixed(2)} — $${entryEach.toFixed(2)} each.${shortNote} ${summarizePlan(plan)} ` +
+        `No play is guaranteed; this is the highest-profit-chance build at that size.` +
+        `\n\nTap the card to expand the picks.`;
+      return {
+        id: `a-${Date.now()}`,
+        role: "assistant",
+        text,
+        plans: [plan],
+        recommendedLabel: plan.label,
+      };
+    }
+    // Couldn't fill that many — fall through to the standard options below.
   }
 
   const plans = generatePlans(props, budget, intent, projections);
