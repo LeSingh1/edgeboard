@@ -625,6 +625,93 @@ export function optimize({
   };
 }
 
+/**
+ * Round-robin "variations" of a fixed set of picks.
+ *
+ * Given the picks the user likes (e.g. the 5 in their top lineup), build every
+ * smaller sub-lineup (sizes 3..N) and return the best `count` by honest chance
+ * to profit. This is the real hedge behind "give me variations so if one hits I
+ * profit": with 5 picks there are C(5,3)=10 three-pick combos, C(5,4)=5 four-
+ * pick combos, etc. If, say, 3 of the 5 land, the 3-pick combo of exactly those
+ * three CASHES even though the full 5-pick missed.
+ *
+ * Sides are NOT re-explored away from the user's intent: "safe" sorting keeps
+ * each standard pick on its higher-probability side, which is the side that put
+ * it in a high-confidence lineup to begin with — so the variations show the
+ * same Over/Under directions the user already has.
+ *
+ * IMPORTANT (honesty): these variations are NOT independent — they're drawn
+ * from the same N picks, so a single missed pick takes down every sub-lineup
+ * that contains it. They cash on PARTIAL outcomes (a 3-of-5 day), which is the
+ * genuine benefit; they are not N independent shots. The caller surfaces this.
+ */
+export function buildVariations(
+  seedPicks: { prop: Prop; side: PickSide }[],
+  entryCost: number,
+  count: number,
+): Lineup[] {
+  const all: Lineup[] = [];
+  const maxSize = Math.min(seedPicks.length, 6);
+  let counter = 0;
+
+  // Enumerate every sub-combination of the seed picks at sizes 3..N, pricing
+  // both Power and Flex. Crucially we DON'T re-explore sides here (that's what
+  // turned the round-robin into side-flips of one combo) — each player stays on
+  // the side the user picked. We just vary WHICH players are in each slip.
+  for (let size = 3; size <= maxSize; size++) {
+    for (const combo of combinations(seedPicks, size)) {
+      const props = combo.map((c) => c.prop);
+      // Skip un-enterable combos (PrizePicks needs 2+ teams).
+      if (!meetsTeamDiversity(props)) continue;
+      const sides = combo.map((c) => c.side);
+
+      const power = computePower(props, sides, entryCost);
+      all.push({
+        id: `var-${size}-${++counter}-p`,
+        rank: 0,
+        ...power,
+        netProfit: power.grossPayout - entryCost,
+        entryCost,
+      });
+
+      const flex = computeFlex(props, sides, entryCost);
+      if (flex) {
+        all.push({
+          id: `var-${size}-${++counter}-f`,
+          rank: 0,
+          ...flex,
+          netProfit: flex.grossPayout - entryCost,
+          entryCost,
+        });
+      }
+    }
+  }
+
+  // Rank by honest chance to actually profit, then by upside. probProfit
+  // already excludes Flex tiers that cash but lose (e.g. 3/5 → 0.4×). Smaller
+  // sub-lineups naturally float up (they hit more often) — exactly the hedge:
+  // a 3-of-5 day still cashes the right 3-pick combo.
+  all.sort(
+    (a, b) =>
+      (b.probProfit ?? b.hitProbability) - (a.probProfit ?? a.hitProbability) ||
+      b.grossPayout - a.grossPayout,
+  );
+  // Dedupe by player-set + sides + play type so the same combo doesn't repeat.
+  const seen = new Set<string>();
+  const out: Lineup[] = [];
+  for (const l of all) {
+    const sig =
+      l.playType +
+      "|" +
+      l.picks.map((p) => `${p.prop.id}:${p.side}`).sort().join(",");
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    out.push(l);
+    if (out.length >= count) break;
+  }
+  return out.map((l, i) => ({ ...l, rank: i + 1 }));
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Recommendation engine: best lineup at each size + an overall pick
 // ════════════════════════════════════════════════════════════════════

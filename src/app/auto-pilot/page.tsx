@@ -19,7 +19,11 @@ import {
   Wand2,
   Copy,
   Check,
+  Ghost,
+  Flame,
+  Scale,
 } from "lucide-react";
+import type { OddsPreference } from "@/lib/autoPilot";
 import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
@@ -35,6 +39,21 @@ const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const MAX_SPEND_PRESETS = [10, 25, 50, 100, 200] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
 const LINEUP_COUNTS = [1, 2, 3, 4, 5] as const;
+
+/** Pick-style choices for the "What do you lean toward?" control. Each maps to
+ *  an OddsPreference the optimizer honors when ranking + choosing variants. */
+const ODDS_PREFERENCES: {
+  value: OddsPreference;
+  label: string;
+  blurb: string;
+  icon: typeof Ghost;
+  accent: string;
+}[] = [
+  { value: "balanced", label: "Balanced", blurb: "Let the model pick the best style per player.", icon: Scale, accent: "#FFE600" },
+  { value: "goblin", label: "Green goblins", blurb: "Easier lines — hit more often, smaller payout.", icon: Ghost, accent: "#4ADE80" },
+  { value: "demon", label: "Red demons", blurb: "Harder lines — bigger payout, lower hit rate.", icon: Flame, accent: "#F87171" },
+  { value: "standard", label: "Standard", blurb: "Plain over/under lines only — no goblins or demons.", icon: TrendingUp, accent: "#00F5D4" },
+];
 
 /**
  * Defaults used whenever a control is left on "auto":
@@ -66,6 +85,14 @@ export default function AutoPilotPage() {
   // optimizer. Empty allowlist = no filter (graceful fallback when the
   // cache hasn't been warmed yet).
   const playoffsOnly = useSettingsStore((s) => s.playoffsOnly);
+  // Pick-style preference (green goblins / red demons / standard / balanced).
+  // Persisted in settings so it carries across pages + the budget chat.
+  const oddsPreference = useSettingsStore((s) => s.oddsPreference);
+  const setOddsPreference = useSettingsStore((s) => s.setOddsPreference);
+  // "Favor consistent players" — standing safer-bets default; weights low-
+  // variance players up in the candidate ranking.
+  const favorConsistency = useSettingsStore((s) => s.favorConsistency);
+  const setFavorConsistency = useSettingsStore((s) => s.setFavorConsistency);
   const [playoffTeams, setPlayoffTeams] = useState<string[]>([]);
   useEffect(() => {
     if (!playoffsOnly) return;
@@ -214,11 +241,16 @@ export default function AutoPilotPage() {
       sport: resolvedSport,
       realProjections: byProp,
       teamAllowlist: allowlist,
+      oddsPreference,
+      favorConsistency,
     };
     // Resolve entry + count, then apply the Max Spend cap by trimming the
     // lineup count so count × entry never exceeds it.
     const baseEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
     const baseCount = lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount;
+    // When the user explicitly picked a count, fill to it (allow overlap on a
+    // thin board) rather than collapsing to the strictly-distinct few.
+    const fillToCount = lineupCount !== "auto";
     const cap = maxSpend === "auto" ? null : maxSpend;
     const cappedCount =
       cap != null ? Math.max(0, Math.min(baseCount, Math.floor(cap / baseEntry))) : baseCount;
@@ -241,7 +273,7 @@ export default function AutoPilotPage() {
       resolved.lineupSize,
       resolved.lineupCount,
       resolved.entry,
-      { sport: resolved.sport, realProjections: byProp, teamAllowlist: allowlist },
+      { sport: resolved.sport, realProjections: byProp, teamAllowlist: allowlist, oddsPreference, fillToCount, favorConsistency },
     );
 
     // Warm REAL calibrated projections (game-log model + isotonic calibration)
@@ -263,7 +295,7 @@ export default function AutoPilotPage() {
           resolved.lineupSize,
           resolved.lineupCount,
           resolved.entry,
-          { sport: resolved.sport, realProjections: fresh, teamAllowlist: allowlist },
+          { sport: resolved.sport, realProjections: fresh, teamAllowlist: allowlist, oddsPreference, fillToCount, favorConsistency },
         );
       } catch {
         /* keep the implied-priced result if warming fails */
@@ -595,6 +627,75 @@ export default function AutoPilotPage() {
                 <>${maxSpend} cap — current plan fits (${spend.plannedTotal} total).</>
               )}
             </p>
+          </ControlCard>
+
+          <ControlCard title="What do you lean toward?" icon={Ghost} accent="#FF3AF2" accent2="#FFE600">
+            <div className="grid grid-cols-2 gap-3">
+              {ODDS_PREFERENCES.map((opt) => {
+                const active = oddsPreference === opt.value;
+                const Icon = opt.icon;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setOddsPreference(opt.value)}
+                    className={cn(
+                      "flex items-start gap-3 rounded-2xl border-4 p-3 text-left transition-all",
+                      active ? "text-[#0D0D1A]" : "text-white hover:bg-white/5",
+                    )}
+                    style={{
+                      borderColor: opt.accent,
+                      background: active ? opt.accent : "transparent",
+                    }}
+                  >
+                    <Icon size={20} strokeWidth={3} className="flex-shrink-0 mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="block font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-xs">
+                        {opt.label}
+                      </span>
+                      <span className={cn("block text-[10px] mt-0.5 leading-tight", active ? "text-[#0D0D1A]/75" : "text-white/55")}>
+                        {opt.blurb}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {oddsPreference === "demon" && (
+              <p className="text-[#F87171] text-xs mt-3 flex items-start gap-1.5">
+                <Flame size={13} strokeWidth={3} className="flex-shrink-0 mt-0.5" />
+                Heads up: demons are built to hit under ~45% of the time. You&apos;re trading hit
+                rate for payout — profit % on these lineups will read lower on purpose.
+              </p>
+            )}
+
+            {/* Safer-bets toggle: weight low-variance (consistent) players up. */}
+            <button
+              onClick={() => setFavorConsistency(!favorConsistency)}
+              className={cn(
+                "mt-4 w-full flex items-center gap-3 rounded-2xl border-4 p-3 text-left transition-all",
+                favorConsistency ? "border-[#4ADE80] bg-[#4ADE80]/10" : "border-white/15 hover:bg-white/5",
+              )}
+            >
+              <span
+                className={cn(
+                  "w-11 h-7 rounded-full flex items-center transition-all flex-shrink-0 px-0.5",
+                  favorConsistency ? "bg-[#4ADE80] justify-end" : "bg-white/20 justify-start",
+                )}
+              >
+                <span className="w-6 h-6 rounded-full bg-white block" />
+              </span>
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-xs text-white">
+                  <Scale size={14} strokeWidth={3} className="text-[#4ADE80]" />
+                  Favor consistent players
+                </span>
+                <span className="block text-[10px] text-white/55 mt-0.5 leading-tight">
+                  {favorConsistency
+                    ? "On — steady, low-variance players are weighted above boom-or-bust ones for safer slips."
+                    : "Off — picks are ranked by hit probability alone, regardless of how volatile the player is."}
+                </span>
+              </span>
+            </button>
           </ControlCard>
 
           {leagueOptions.length > 1 && (

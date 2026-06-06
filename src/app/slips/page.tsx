@@ -15,15 +15,23 @@ import {
   Zap,
   Layers,
   Lightbulb,
+  AlertTriangle,
 } from "lucide-react";
 import { useLineupStore, type SlipStatus } from "@/stores/lineupStore";
 import { useBankrollStore } from "@/stores/bankrollStore";
 import { OddsBadge } from "@/components/OddsBadge";
 import { PortfolioStrategy } from "@/components/PortfolioStrategy";
 import { analyzeVariantStrategy } from "@/lib/variantStrategy";
-import { detectReversion } from "@/lib/optimizer";
+import { detectReversion, buildVariations } from "@/lib/optimizer";
 import { accentHexFor, cn } from "@/lib/cn";
 import type { Lineup, PlayType, Prop, RiskMode } from "@/lib/types";
+
+/** A pick is real-model-priced when its prop carries a trained model version
+ *  (game-log + calibration). Anything missing or "implied-v1" is the flat
+ *  PrizePicks-implied placeholder — no real projection behind it. */
+function isModelPriced(prop: Prop): boolean {
+  return !!prop.modelVersion && prop.modelVersion !== "implied-v1";
+}
 
 const MODE_LABEL: Record<RiskMode, string> = {
   safe: "Highest chance to hit",
@@ -40,6 +48,40 @@ const RISK_COLORS: Record<Lineup["correlationRisk"], { bg: string; text: string;
 export default function SlipsPage() {
   const router = useRouter();
   const { lineups, totalGenerated, elapsedMs, params } = useLineupStore();
+  const setResults = useLineupStore((s) => s.setResults);
+  // True once the board IS a round-robin of a seed lineup (so the button can
+  // relabel + we don't re-round-robin an already-round-robined board).
+  const [variationsOf, setVariationsOf] = useState<number | null>(null);
+
+  /**
+   * Round-robin the current #1 lineup's picks into N variations. With K picks
+   * we build every sub-lineup (sizes 3..K), keep the best N by chance-to-profit,
+   * and replace the leaderboard with them. The payoff: if a PARTIAL set of those
+   * K picks lands (e.g. 3 of 5), the sub-lineup of exactly those cashes — even
+   * though the full lineup missed. These are NOT independent shots (one missed
+   * pick sinks every slip containing it); the banner below says so.
+   */
+  const makeVariations = (count: number) => {
+    const top = lineups[0];
+    if (!top) return;
+    const seed = top.picks.map((p) => ({ prop: p.prop, side: p.side }));
+    const entry = params?.entryCost ?? top.entryCost ?? 1;
+    const variations = buildVariations(seed, entry, count);
+    if (!variations.length) return;
+    setResults({
+      lineups: variations,
+      totalGenerated: variations.length,
+      elapsedMs: 0,
+      params: {
+        lineupSize: variations[0].picks.length,
+        playType: variations[0].playType,
+        entryCost: entry,
+        riskMode: "safe",
+      },
+    });
+    setVariationsOf(seed.length);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   // If the user opens /slips directly with no generated lineups (e.g. browser
   // restored the URL from a previous session), bounce them to the live board
@@ -108,6 +150,34 @@ export default function SlipsPage() {
             </span>
           </span>
         </p>
+
+        {/* Round-robin: turn the #1 lineup's picks into N sub-lineup variations
+            so a PARTIAL hit still cashes. Only offered when the top lineup has
+            enough picks (4+) to actually form multiple distinct sub-lineups. */}
+        {best.picks.length >= 4 && (
+          <button
+            onClick={() => makeVariations(10)}
+            className="mt-5 inline-flex items-center gap-2 px-5 py-3 rounded-full border-4 border-[#FFE600] bg-gradient-to-r from-[#FF3AF2] via-[#7B2FFF] to-[#00F5D4] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-white text-sm hover:scale-105 active:scale-95 transition-transform"
+          >
+            <Layers size={16} strokeWidth={3} />
+            10 variations of the #1 picks
+          </button>
+        )}
+
+        {variationsOf != null && (
+          <div className="mt-5 rounded-2xl border-2 border-dashed border-[#FFE600]/50 bg-[#FFE600]/5 p-4 text-white/70 text-xs leading-relaxed">
+            <strong className="text-[#FFE600] uppercase tracking-widest text-[10px] font-bold block mb-1.5">
+              Round-robin · {variationsOf} picks
+            </strong>
+            These are every best sub-lineup of your {variationsOf} picks. The payoff:
+            if a <strong className="text-white"> partial set</strong> of them lands (e.g. 3 of {variationsOf}),
+            the slip built from exactly those still cashes — even if the full lineup misses.
+            One caveat, straight up: they all draw from the same {variationsOf} picks, so they are
+            <strong className="text-white"> not {Math.min(10, variationsOf)} independent shots</strong> —
+            a single missed pick takes down every slip that contains it. This hedges
+            <em> partial</em> outcomes; it doesn&apos;t multiply your real edge.
+          </div>
+        )}
       </motion.div>
 
       {/* Hero best slip */}
@@ -193,8 +263,9 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
             <h2
               className="font-[family-name:var(--font-display)] text-6xl md:text-8xl leading-none text-shadow-3"
               style={{
-                color:
-                  (lineup.probProfit ?? lineup.hitProbability) >= 0.25
+                color: lineup.picks.every((p) => !isModelPriced(p.prop))
+                  ? "#9CA3AF"
+                  : (lineup.probProfit ?? lineup.hitProbability) >= 0.25
                     ? "#4ADE80"
                     : (lineup.probProfit ?? lineup.hitProbability) >= 0.10
                       ? "#FFE600"
@@ -204,7 +275,9 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
               {((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}%
             </h2>
             <p className="text-white/70 text-base mt-2 uppercase tracking-wider font-bold">
-              Chance to profit
+              {lineup.picks.every((p) => !isModelPriced(p.prop))
+                ? "Implied odds — no real projection"
+                : "Chance to profit"}
             </p>
           </div>
 
@@ -214,7 +287,7 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
               value={`${lineup.expectedValue >= 0 ? "+" : ""}$${lineup.expectedValue.toFixed(2)}`}
               accent={lineup.expectedValue >= 0 ? "#4ADE80" : "#F87171"}
             />
-            <Stat label="Payout" value={`${lineup.payoutMultiplier}×`} accent="#FFE600" />
+            <Stat label="Payout" value={`${lineup.payoutMultiplier.toFixed(2)}×`} accent="#FFE600" />
             <Stat label="If hit" value={`$${lineup.grossPayout.toFixed(0)}`} accent="#00F5D4" />
             <CorrelationBadge risk={lineup.correlationRisk} />
           </div>
@@ -343,6 +416,13 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
   const borderStyle =
     index % 3 === 0 ? "solid" : index % 3 === 1 ? "dashed" : "dotted";
 
+  // Real-model coverage: how many picks are backed by the trained model vs the
+  // PrizePicks-implied placeholder. Drives the per-pick dots, the warning line,
+  // and graying out the headline % when a lineup is entirely placeholders.
+  const modelCount = lineup.picks.filter((p) => isModelPriced(p.prop)).length;
+  const totalPicks = lineup.picks.length;
+  const allImplied = modelCount === 0;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 30, rotate: 0 }}
@@ -373,8 +453,9 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
         <span
           className="font-[family-name:var(--font-heading)] font-black text-3xl"
           style={{
-            color:
-              (lineup.probProfit ?? lineup.hitProbability) >= 0.25
+            color: allImplied
+              ? "#9CA3AF"
+              : (lineup.probProfit ?? lineup.hitProbability) >= 0.25
                 ? "#4ADE80"
                 : (lineup.probProfit ?? lineup.hitProbability) >= 0.10
                   ? "#FFE600"
@@ -383,11 +464,28 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
         >
           {((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}%
         </span>
-        <span className="text-xs text-white/50 font-bold uppercase tracking-wider">Profit</span>
+        <span className="text-xs text-white/50 font-bold uppercase tracking-wider">
+          {allImplied ? "Implied*" : "Profit"}
+        </span>
       </div>
-      <div className="text-white/60 text-xs mb-4 font-bold uppercase tracking-wider" title="Average dollars per play long-term · max possible payout if all picks land">
+      <div className="text-white/60 text-xs mb-2 font-bold uppercase tracking-wider" title="Average dollars per play long-term · max possible payout if all picks land">
         Avg {lineup.expectedValue >= 0 ? "+" : ""}${lineup.expectedValue.toFixed(2)}/play · ${lineup.grossPayout.toFixed(0)} if hit
       </div>
+      {/* Model-coverage banner — flags placeholders so an implied lineup can't
+          pose as a real lock. */}
+      {allImplied ? (
+        <div className="mb-3 rounded-lg border border-[#F87171]/50 bg-[#F87171]/10 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-[#F87171] flex items-center gap-1.5">
+          <AlertTriangle size={11} strokeWidth={3} aria-hidden /> Implied odds only — no real projection
+        </div>
+      ) : modelCount < totalPicks ? (
+        <div className="mb-3 text-[10px] font-bold uppercase tracking-wider text-[#FFE600]/90 flex items-center gap-1.5">
+          <AlertTriangle size={11} strokeWidth={3} aria-hidden /> {modelCount}/{totalPicks} picks model-priced · rest implied
+        </div>
+      ) : (
+        <div className="mb-3 text-[10px] font-bold uppercase tracking-wider text-[#4ADE80]/90 flex items-center gap-1.5">
+          <Check size={11} strokeWidth={3} aria-hidden /> All {totalPicks} model-priced
+        </div>
+      )}
 
       <div className="space-y-1.5 text-xs">
         {lineup.picks.map((p, i) => (
@@ -400,6 +498,11 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
             >
               {p.side === "more" ? "+" : "−"}
             </span>
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: isModelPriced(p.prop) ? "#4ADE80" : "#6B7280" }}
+              title={isModelPriced(p.prop) ? `Real model · ${p.prop.modelVersion}` : "PrizePicks-implied — no model projection"}
+            />
             <span className="text-white truncate font-bold">{p.prop.playerName}</span>
             <span className="text-white/40 flex-shrink-0">
               {p.prop.statType.slice(0, 4)} {p.prop.line}

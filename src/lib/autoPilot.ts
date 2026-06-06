@@ -27,6 +27,17 @@ import { optimize } from "@/lib/optimizer";
 import type { Lineup, PickSide, Prop } from "@/lib/types";
 import type { ProjectionResult } from "@/lib/realProjections";
 
+/**
+ * Which PrizePicks pick style the user wants the autopilot to lean into.
+ *   balanced — default; rank by quality with small per-type bonuses.
+ *   goblin   — easier lines (green goblins): higher hit rate, smaller payout.
+ *   demon    — harder lines (red demons): lower hit rate, bigger payout.
+ *   standard — plain over/under lines only.
+ * The preference biases BOTH which variant we take per player and how the
+ * candidate pool is ranked, so the final lineups actually reflect the choice.
+ */
+export type OddsPreference = "balanced" | "goblin" | "demon" | "standard";
+
 export interface AutoPilotOptions {
   /** League name from the props feed, or "ALL" / undefined for no filter. */
   sport?: string;
@@ -48,6 +59,34 @@ export interface AutoPilotOptions {
   /** Hard filter: only include props whose team is in this set. Used by the
    *  "Playoff teams only" toggle to drop eliminated teams from the pool. */
   teamAllowlist?: Set<string>;
+  /** Lean the build toward a pick style (green goblins / red demons / standard).
+   *  Defaults to "balanced". When set to a specific type, we take that variant
+   *  per player when it exists and float matching props to the top of the pool,
+   *  so the lineups returned actually reflect the preference. Demon preference
+   *  also relaxes the probability floor (demons are intentionally < 50% to hit). */
+  oddsPreference?: OddsPreference;
+  /** The user EXPLICITLY asked for N lineups (vs. "give me some"). When true we
+   *  widen the pool and, after strict diversity, top up to N from the ranked
+   *  optimizer output even if those extra slips overlap heavily — N separate
+   *  shots is the point. When false (default) we stop at the strictly-distinct
+   *  set so "give me lineups" doesn't return near-clones. */
+  fillToCount?: boolean;
+  /** Favor CONSISTENT players over volatile ones when ranking the candidate
+   *  pool. Consistency = the recent line-clear rate (fraction of recent games
+   *  that landed on the bet's side); a player who clears the line game after
+   *  game is weighted above a boom-or-bust player at the same hit probability.
+   *  Only bites for picks with a real projection + recent games (implied picks
+   *  get a small uncertainty nudge instead). Default off here; the page/chat
+   *  pass the user's saved `favorConsistency` setting. */
+  favorConsistency?: boolean;
+  /** Hard "consistent players only" mode (vs. the softer `favorConsistency`
+   *  weighting). Forces consistency weighting ON, raises the probability floor
+   *  so coinflip picks are excluded, and DROPS players whose real projection is
+   *  too volatile (CV above the cutoff). Picks without a real projection are
+   *  kept (we can't disprove their consistency) but rank below verified-steady
+   *  ones. Use when the user explicitly asks for "consistent / safe / steady
+   *  players only". */
+  consistentOnly?: boolean;
 }
 
 export interface AutoPilotResult {
@@ -92,49 +131,113 @@ function withRealProb(p: Prop, real?: Record<string, ProjectionResult>): Prop {
 function bestVariant(
   vs: VariantSet,
   real?: Record<string, ProjectionResult>,
+  preference: OddsPreference = "balanced",
 ): { prop: Prop; side: PickSide; prob: number } | null {
   const all = [vs.goblin, vs.standard, vs.demon].filter(Boolean) as Prop[];
   if (all.length === 0) return null;
 
-  let best: { prop: Prop; side: PickSide; prob: number } | null = null;
-  for (const raw of all) {
+  // Resolve one variant to its best playable side + probability.
+  const resolve = (raw: Prop): { prop: Prop; side: PickSide; prob: number } => {
     const p = withRealProb(raw, real);
-    const candidate: { prop: Prop; side: PickSide; prob: number } =
-      p.oddsType !== "standard"
+    // Goblin/demon are MORE-only on PrizePicks; standard can go either way.
+    return p.oddsType !== "standard"
+      ? { prop: p, side: "more", prob: p.pMore }
+      : p.pMore >= p.pLess
         ? { prop: p, side: "more", prob: p.pMore }
-        : p.pMore >= p.pLess
-          ? { prop: p, side: "more", prob: p.pMore }
-          : { prop: p, side: "less", prob: p.pLess };
-    if (!best || candidate.prob > best.prob) best = candidate;
+        : { prop: p, side: "less", prob: p.pLess };
+  };
+
+  // Honor an explicit pick-style preference: if this family offers the wanted
+  // variant, take it even when its raw probability is lower — that lower hit
+  // rate (and bigger payout, for demons) is exactly the tradeoff the user
+  // opted into. Families without the wanted variant fall through to best-prob.
+  if (preference !== "balanced") {
+    const want = all.find((p) => p.oddsType === preference);
+    if (want) return resolve(want);
+  }
+
+  // Compare variants by push-adjusted probability so a clean .5 line beats a
+  // whole-number line of similar raw probability (whole numbers can push).
+  let best: { prop: Prop; side: PickSide; prob: number } | null = null;
+  let bestAdj = -1;
+  for (const raw of all) {
+    const candidate = resolve(raw);
+    const adj = candidate.prob * pushPenalty(candidate.prop);
+    if (adj > bestAdj) {
+      bestAdj = adj;
+      best = candidate;
+    }
   }
   return best;
 }
 
 /**
- * Greedy diversity filter — keeps the top-ranked lineup, then walks the rest
- * skipping any lineup that shares more than ~70% of its picks with one
- * already selected. If diversity leaves us short of `k`, the leftovers are
- * appended in rank order (so we always return as many as requested if the
- * optimizer found that many).
+ * Greedy diversity filter — keeps the top-ranked lineup, then accepts a lineup
+ * only when it shares at most ~half its picks with any already-selected slip,
+ * so "give me N lineups" yields genuinely different shots rather than N near-
+ * clones. That's the whole point of playing several: independent chances, not
+ * the same correlated bet repeated.
+ *
+ * If strict diversity can't fill `k` (a thin pool), the shortfall is filled with
+ * the LEAST-overlapping leftovers — never the most-overlapping rank-order clones
+ * the old version padded with.
  */
-function selectDiverse(lineups: Lineup[], k: number, size: number): Lineup[] {
+function selectDiverse(lineups: Lineup[], k: number, size: number, fill = false): Lineup[] {
   if (lineups.length === 0 || k <= 0) return [];
-  const maxShared = Math.max(1, Math.floor(size * 0.7));
+  const maxShared = Math.max(1, Math.floor(size * 0.5)); // ≤ ~half the picks shared
   const out: Lineup[] = [lineups[0]];
   const used = new Set<string>([lineups[0].id]);
+
+  /** Most picks `l` shares with any lineup already chosen. */
+  const overlapWith = (l: Lineup): number => {
+    const lIds = new Set(l.picks.map((p) => p.prop.id));
+    let max = 0;
+    for (const e of out) {
+      let s = 0;
+      for (const p of e.picks) if (lIds.has(p.prop.id)) s++;
+      if (s > max) max = s;
+    }
+    return max;
+  };
+
+  // Pass 1: strictly diverse (≤ maxShared overlap), best-ranked first.
   for (const l of lineups.slice(1)) {
     if (out.length >= k) break;
-    const lIds = new Set(l.picks.map((p) => p.prop.id));
-    const tooSimilar = out.some((existing) => {
-      let shared = 0;
-      for (const p of existing.picks) if (lIds.has(p.prop.id)) shared++;
-      return shared > maxShared;
-    });
-    if (tooSimilar) continue;
-    out.push(l);
-    used.add(l.id);
+    if (overlapWith(l) <= maxShared) {
+      out.push(l);
+      used.add(l.id);
+    }
   }
-  if (out.length < k) {
+  // Pass 2: still short? Greedily add the leftover that overlaps LEAST with the
+  // slips chosen so far (recomputed each step, so two fillers can't clone each
+  // other) — but NEVER a near-clone: it must differ from every chosen slip by at
+  // least 2 picks. If a thin pool can't reach `k` that way, return fewer; N
+  // truly-different shots beats k overlapping ones (the caller surfaces "could
+  // only fund N slips").
+  const cloneBound = Math.max(1, size - 2); // differ in >= 2 picks
+  while (out.length < k) {
+    let best: Lineup | null = null;
+    let bestOv = Infinity;
+    for (const l of lineups) {
+      if (used.has(l.id)) continue;
+      const ov = overlapWith(l);
+      if (ov < bestOv) {
+        bestOv = ov;
+        best = l;
+      }
+    }
+    if (!best || bestOv > cloneBound) break; // nothing diverse enough left
+    out.push(best);
+    used.add(best.id);
+  }
+
+  // Pass 3 — fill mode only: the user explicitly asked for k slips, so top up
+  // to k from the ranked optimizer output, accepting heavy overlap. These are
+  // still DISTINCT lineups (the optimizer never emits two identical ones), just
+  // not independent — which is the honest tradeoff of a thin board. We add in
+  // rank order so the highest-quality leftovers come first. The caller surfaces
+  // how much they overlap so the user knows these aren't 10 independent shots.
+  if (fill && out.length < k) {
     for (const l of lineups) {
       if (out.length >= k) break;
       if (used.has(l.id)) continue;
@@ -186,8 +289,63 @@ export function pickAutoSize(
  * lineups. Demons are slightly penalized — higher payout but lower hit rate
  * makes them poor autopilot candidates.
  */
-function autoScore(c: { prop: Prop; prob: number }): number {
+/**
+ * Consistency multiplier from a player's RECENT LINE-CLEAR RATE — the fraction
+ * of their recent games that actually landed on the bet's side of the line. A
+ * player who clears the line in 5 of 5 recent games is reliable; one who clears
+ * it in 2 of 5 is a coinflip dressed up as a projection. This beats coefficient
+ * of variation, which wrongly punishes high-floor low-mean props (e.g. "Hits+
+ * Runs+RBIs over 0.5" clears nearly every game but has a huge sigma/mean).
+ *
+ *   clear 1.0 (cleared every recent game) → 1.30×
+ *   clear 0.7                              → ~1.09×
+ *   clear 0.5 (coinflip)                   → ~0.95×
+ *   clear 0.0                              → 0.60×
+ *
+ * `undefined` = no real projection / too few recent games: can't verify, so a
+ * small uncertainty nudge (0.90×) rather than trusting it blindly.
+ */
+function consistencyFactor(clear: number | undefined): number {
+  if (clear === undefined) return 0.9;
+  return Math.max(0.6, Math.min(1.3, 0.6 + 0.7 * clear));
+}
+
+/**
+ * Push-risk penalty. A WHOLE-NUMBER line (e.g. "over 6 assists") can land
+ * EXACTLY on the number — on PrizePicks that's a push: the leg voids (Power
+ * refunds, Flex drops the pick and pays the lower tier), which costs you the
+ * win you were counting on. A HALF-POINT line (x.5) can never push — the result
+ * is always cleanly over or under. So we always favor .5 lines: whole-number
+ * lines get knocked down in the ranking, surfacing the cleaner .5 alternatives.
+ * (The model's pMore also ignores the exact-landing mass, so it OVERrates whole
+ * lines — this penalty corrects for both at the selection layer.)
+ */
+function pushPenalty(prop: Prop): number {
+  return Number.isInteger(prop.line) ? 0.72 : 1;
+}
+
+function autoScore(
+  c: { prop: Prop; prob: number; clear?: number },
+  preference: OddsPreference = "balanced",
+  favorConsistency = false,
+): number {
   const { prob, prop } = c;
+  const consistency = favorConsistency ? consistencyFactor(c.clear) : 1;
+  // Always-on: favor .5 lines (no push risk) over whole-number lines.
+  const push = pushPenalty(prop);
+
+  // Explicit preference: float matching picks above ALL non-matching ones (a
+  // big additive lift), still probability-ordered within each group. With the
+  // small pool cap, this makes the pool preferred-dominated whenever the board
+  // has enough of that style — so the optimizer's lineups reflect the choice.
+  // Consistency reorders WITHIN each group (the ×factor can't lift a non-
+  // preferred pick past the +10 float).
+  if (preference !== "balanced") {
+    return (prop.oddsType === preference ? prob + 10 : prob) * consistency * push;
+  }
+
+  // Balanced (default): blend probability with a per-type bonus — consistent
+  // standard lines first, goblins for their payout-per-risk, demons last.
   let bonus = 1.0;
   if (prop.oddsType === "standard") {
     bonus = prob >= 0.65 ? 1.12 : 1.0;
@@ -196,7 +354,7 @@ function autoScore(c: { prop: Prop; prob: number }): number {
   } else if (prop.oddsType === "demon") {
     bonus = 0.92;
   }
-  return prob * bonus;
+  return prob * bonus * consistency * push;
 }
 
 /**
@@ -212,10 +370,15 @@ export function buildAutoLineups(
 ): AutoPilotResult {
   const start = performance.now();
   const real = options.realProjections;
+  const preference = options.oddsPreference ?? "balanced";
+  const consistentOnly = options.consistentOnly ?? false;
+  // Hard consistent-only mode implies consistency weighting and a clear-rate bar.
+  const favorConsistency = (options.favorConsistency ?? false) || consistentOnly;
+  const MIN_CLEAR = 0.6; // must have cleared the line in >= 60% of recent games
   const families = groupByFamily(allProps);
 
   const seen = new Set<string>();
-  const candidates: Array<{ prop: Prop; side: PickSide; prob: number }> = [];
+  const candidates: Array<{ prop: Prop; side: PickSide; prob: number; clear?: number }> = [];
 
   for (const p of allProps) {
     if (options.sport && options.sport !== "ALL" && p.sport !== options.sport) continue;
@@ -233,15 +396,44 @@ export function buildAutoLineups(
     const vs = families.get(fk);
     if (!vs) continue;
 
-    const best = bestVariant(vs, real);
+    const best = bestVariant(vs, real, preference);
     if (!best) continue;
-    const minProb = options.minProbability ?? 0.5;
+    // Probability floor. Demons are intentionally < 50% to hit, so a demon
+    // preference would be filtered to nothing under the default 0.50 floor —
+    // relax it for picks that match the preferred style the user opted into.
+    // Consistent-only raises the floor so coinflip picks never make the pool.
+    const baseMin = Math.max(options.minProbability ?? 0.5, consistentOnly ? 0.62 : 0);
+    const minProb =
+      preference !== "balanced" && best.prop.oddsType === preference
+        ? Math.min(baseMin, preference === "demon" ? 0.3 : 0.45)
+        : baseMin;
     if (best.prob < minProb) continue;
 
-    candidates.push(best);
+    // Recent line-clear rate from the real projection's recent games: the
+    // fraction that landed on this bet's side of the line. The honest "does
+    // this player reliably clear it?" signal. Undefined for implied picks or
+    // when we have fewer than 3 recent games to judge.
+    const rp = real?.[best.prop.id];
+    let clear: number | undefined;
+    if (rp && rp.available && Array.isArray(rp.recent) && rp.recent.length >= 3) {
+      const line = best.prop.line;
+      const hits = rp.recent.filter((v) =>
+        best.side === "more" ? v > line : v < line,
+      ).length;
+      clear = hits / rp.recent.length;
+    }
+    // Consistent-only: drop players who haven't reliably cleared the line lately.
+    // (Implied picks have no recent data — kept, but rank below verified ones.)
+    if (consistentOnly && clear !== undefined && clear < MIN_CLEAR) continue;
+
+    candidates.push({ ...best, clear });
   }
 
-  candidates.sort((a, b) => autoScore(b) - autoScore(a));
+  candidates.sort(
+    (a, b) =>
+      autoScore(b, preference, favorConsistency) -
+      autoScore(a, preference, favorConsistency),
+  );
 
   // Per-league cap: PrizePicks limits how many picks from the same sub-league
   // can appear in a single lineup. Segment sports (1Q, 2Q, 1H, 2H, etc.)
@@ -259,6 +451,10 @@ export function buildAutoLineups(
     leagueCapped.push(c);
   }
 
+  // Pool cap keeps C(pool,k)×2^k tractable — do NOT widen it for fillToCount
+  // (that blows up the optimizer's combination enumeration and OOMs). The
+  // fill-to-count behavior tops up from the optimizer's existing ranked output
+  // instead, which needs no extra pool material.
   const cap = options.maxPoolSize ?? poolCapFor(lineupSize);
   const pool = leagueCapped.slice(0, cap);
   const poolProps = pool.map((c) => c.prop);
@@ -290,7 +486,7 @@ export function buildAutoLineups(
   });
 
   const picked = (options.diversify ?? true)
-    ? selectDiverse(r.lineups, lineupCount, lineupSize).map((l, i) => ({ ...l, rank: i + 1 }))
+    ? selectDiverse(r.lineups, lineupCount, lineupSize, options.fillToCount ?? false).map((l, i) => ({ ...l, rank: i + 1 }))
     : r.lineups.slice(0, lineupCount).map((l, i) => ({ ...l, rank: i + 1 }));
 
   return {

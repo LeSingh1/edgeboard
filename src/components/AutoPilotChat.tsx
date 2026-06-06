@@ -22,9 +22,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Sparkles, Loader2, Bot, User, MessageSquare, ArrowRight } from "lucide-react";
-import { buildAutoLineups } from "@/lib/autoPilot";
+import { buildAutoLineups, type OddsPreference } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { POWER_MULTIPLIERS, FLEX_PAYOUT_TABLES, ODDS_FACTOR } from "@/lib/optimizer";
 import type { ProjectionResult } from "@/lib/realProjections";
 import type { Lineup, Prop } from "@/lib/types";
@@ -161,6 +162,66 @@ function parsePickSize(message: string): number | null {
   return null;
 }
 
+/** Detect a "consistent / safe players only" request — the user wants steady,
+ *  low-variance players, not boom-or-bust ones. Triggers the optimizer's hard
+ *  consistent-only mode (high floor + drops volatile players). */
+function parseConsistentOnly(message: string): boolean {
+  return /\bconsist(?:a|e)nt|\bsteady\b|\breliable\b|low[- ]?(?:variance|risk)|safe(?:st|r)?\s+(?:players?|picks?|bets?)|only\s+safe/i.test(
+    message,
+  );
+}
+
+/** Detect an explicit pick-style request in the message ("give me demons",
+ *  "goblins only", "standard lines"). Returns null when none is named, so the
+ *  caller falls back to the user's saved preference. Demon/goblin match their
+ *  PrizePicks colors too ("red"/"green") only when paired with the pick word. */
+function parseOddsPreference(message: string): OddsPreference | null {
+  const m = message.toLowerCase();
+  const mentionsDemon = /\b(demons?|red\s+demons?|devils?)\b/.test(m);
+  const mentionsGoblin = /\b(goblins?|green\s+goblins?)\b/.test(m);
+  // A negation word anywhere in the message flips a mention from a request into
+  // an exclusion — so "no goblins or demons" must NOT read as "demon".
+  const hasNegation = /\b(no|not|without|avoid|skip|exclude|don'?t|neither|none)\b/.test(m);
+
+  // Explicit "standard / regular / plain" request → standard lines only.
+  if (/\b(standard|regular|plain|normal|vanilla)\b/.test(m)) return "standard";
+
+  if (hasNegation) {
+    // "no goblins or demons" (both excluded) → standard.
+    if (mentionsDemon && mentionsGoblin) return "standard";
+    // Only one type excluded → lean to the other (the user ruled one out).
+    if (mentionsDemon) return "goblin";
+    if (mentionsGoblin) return "demon";
+    if (/no\s+preference/.test(m)) return "balanced";
+    return null;
+  }
+
+  // No negation → a mention is a positive request.
+  if (mentionsDemon) return "demon";
+  if (mentionsGoblin) return "goblin";
+  if (/\bbalanced\b|\bmix(?:ed)?\b/.test(m)) return "balanced";
+  return null;
+}
+
+/** Map common phrasings ("WNBA only", "just NBA", "MLB") to the board's league
+ *  name so the plan can be filtered to one sport. Order matters — WNBA is
+ *  checked before NBA (it contains "nba"). Returns null when none is named. */
+function parseSport(message: string): string | null {
+  const m = message.toLowerCase();
+  if (/\bwnba\b|women'?s?\s+(?:nba|basketball|hoops)/.test(m)) return "WNBA";
+  if (/\bnba\b|\bbasketball\b/.test(m)) return "NBA";
+  if (/\bmlb\b|\bbaseball\b/.test(m)) return "MLB";
+  if (/\bnhl\b|\bhockey\b/.test(m)) return "NHL";
+  if (/\btennis\b/.test(m)) return "TENNIS";
+  if (/\bpga\b|\bgolf\b/.test(m)) return "PGA";
+  if (/\b(?:world\s*cup|soccer|f[úu]tbol)\b/.test(m)) return "WORLD CUP";
+  if (/\bnfl\b|american\s+football/.test(m)) return "NFL";
+  if (/\bcs2\b|\bcs:?go\b|counter[- ]?strike/.test(m)) return "CS2";
+  if (/\bufc\b|\bmma\b/.test(m)) return "UFC";
+  if (/\blol\b|league\s+of\s+legends/.test(m)) return "LOL";
+  return null;
+}
+
 /**
  * Build a single plan: K lineups of the same size, each at the same entry.
  *
@@ -177,12 +238,22 @@ function buildPlan(
   lineupSize: number,
   lineupCount: number,
   realProjections: Record<string, ProjectionResult>,
+  preference: OddsPreference,
+  fillToCount = false,
+  consistentOnly = false,
 ): PlanOption | null {
   const r = buildAutoLineups(props, lineupSize, lineupCount, entryCost, {
     realProjections,
     diversify: lineupCount > 1,
     excludeLive: true,
     excludeCombo: true,
+    oddsPreference: preference,
+    fillToCount,
+    consistentOnly,
+    // Read the saved safer-bets default at build time (store is a singleton;
+    // getState() is safe outside React and avoids threading the flag through
+    // respond/generatePlans on every call path).
+    favorConsistency: useSettingsStore.getState().favorConsistency,
   });
   const lineups = r.lineups.filter((l) => l.picks.length === lineupSize);
   if (lineups.length === 0) return null;
@@ -219,7 +290,7 @@ function buildPlan(
  * Trade-off ordering matters: we render in budget-friendly order (safe →
  * lottery) so the user reads safer first.
  */
-function generatePlans(props: Prop[], budget: number, intent: Intent, real: Record<string, ProjectionResult>): PlanOption[] {
+function generatePlans(props: Prop[], budget: number, intent: Intent, real: Record<string, ProjectionResult>, preference: OddsPreference, consistentOnly = false): PlanOption[] {
   const out: PlanOption[] = [];
 
   // Safe split: divide budget into ~3-5 small lineups of size 3, $1-$5 each.
@@ -235,6 +306,9 @@ function generatePlans(props: Prop[], budget: number, intent: Intent, real: Reco
       3,
       safeCount,
       real,
+      preference,
+      false,
+      consistentOnly,
     );
     if (safe) out.push(safe);
   }
@@ -251,6 +325,9 @@ function generatePlans(props: Prop[], budget: number, intent: Intent, real: Reco
       4,
       balCount,
       real,
+      preference,
+      false,
+      consistentOnly,
     );
     if (bal) out.push(bal);
   }
@@ -267,6 +344,9 @@ function generatePlans(props: Prop[], budget: number, intent: Intent, real: Reco
     5,
     1,
     real,
+    preference,
+    false,
+    consistentOnly,
   );
   if (lot) out.push(lot);
 
@@ -294,6 +374,23 @@ function pickRecommended(plans: PlanOption[], intent: Intent): PlanOption | null
   )[0];
 }
 
+/** Most picks any two lineups in a plan share — 0 means fully independent,
+ *  `size` means identical. Used to be honest when a thin board forces the
+ *  filled-to-count slips to overlap heavily (they're separate entries, but not
+ *  independent shots). */
+function maxPairwiseOverlap(lineups: Lineup[]): number {
+  let mx = 0;
+  for (let i = 0; i < lineups.length; i++) {
+    const a = new Set(lineups[i].picks.map((p) => p.prop.id));
+    for (let j = i + 1; j < lineups.length; j++) {
+      let s = 0;
+      for (const p of lineups[j].picks) if (a.has(p.prop.id)) s++;
+      if (s > mx) mx = s;
+    }
+  }
+  return mx;
+}
+
 function summarizePlan(plan: PlanOption): string {
   const ev = plan.expectedReturn - plan.totalStake;
   const profitPct = (plan.probAtLeastOneProfits * 100).toFixed(0);
@@ -314,7 +411,11 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const projections = useProjectionStore((s) => s.byProp);
+  const fetchProjection = useProjectionStore((s) => s.fetchOne);
   const setResults = useLineupStore((s) => s.setResults);
+  // Saved pick-style preference — used as the default when the message itself
+  // doesn't name a style. An inline "give me demons" still overrides it.
+  const oddsPreference = useSettingsStore((s) => s.oddsPreference);
   const router = useRouter();
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -354,10 +455,10 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
 
     // Optimizer is fast (<200ms) but we yield to next tick so the user
     // sees the "thinking" indicator. Avoids the response feeling robotic.
-    setTimeout(() => {
+    setTimeout(async () => {
+      let reply: Message;
       try {
-        const reply = respond(text, board.props, projections);
-        setMessages((prev) => [...prev, reply]);
+        reply = respond(text, board.props, projections, oddsPreference);
       } catch (err) {
         setMessages((prev) => [
           ...prev,
@@ -367,8 +468,28 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
             text: `Couldn't generate a plan — ${err instanceof Error ? err.message : "unknown error"}. Try again with a clear budget like "$10".`,
           },
         ]);
-      } finally {
         setThinking(false);
+        return;
+      }
+      // Show the plan immediately (implied/cached pricing), then upgrade it.
+      setMessages((prev) => [...prev, reply]);
+      setThinking(false);
+
+      // Warm the REAL calibrated model for the props actually in the plan, then
+      // re-score and swap the message in place — so the chat stops showing the
+      // PrizePicks-implied placeholder odds for picks the model can price.
+      try {
+        const picks = new Map<string, Prop>();
+        for (const pl of reply.plans ?? [])
+          for (const l of pl.lineups) for (const pk of l.picks) picks.set(pk.prop.id, pk.prop);
+        if (picks.size > 0) {
+          await Promise.all([...picks.values()].map((p) => fetchProjection(p)));
+          const fresh = useProjectionStore.getState().byProp;
+          const upgraded = respond(text, board.props, fresh, oddsPreference);
+          setMessages((prev) => prev.map((m) => (m.id === reply.id ? { ...upgraded, id: reply.id } : m)));
+        }
+      } catch {
+        /* keep the first (implied) reply if warming fails */
       }
     }, 320);
   };
@@ -605,9 +726,38 @@ function respond(
   message: string,
   props: Prop[],
   projections: Record<string, ProjectionResult>,
+  savedPreference: OddsPreference = "balanced",
 ): Message {
   const budget = parseBudget(message);
   const intent = parseIntent(message);
+  const sport = parseSport(message);
+  // Pick style: an inline request ("give me demons") wins over the saved
+  // preference; otherwise fall back to whatever the user set in the controls.
+  const preference = parseOddsPreference(message) ?? savedPreference;
+  // "Consistent / safe players only" — hard low-variance mode.
+  const consistentOnly = parseConsistentOnly(message);
+  const consistencyNote = consistentOnly
+    ? " Consistent players only — coinflip picks and boom-or-bust players (high game-to-game variance) were excluded."
+    : "";
+  // One-liner appended to replies so the user knows the style was honored.
+  const styleNote =
+    preference === "goblin"
+      ? " Built from green goblins — easier lines, so higher hit chance but smaller payouts."
+      : preference === "demon"
+        ? " Built from red demons as you asked — bigger payouts, but these are meant to hit under ~45% of the time, so the profit odds read low on purpose."
+        : preference === "standard"
+          ? " Standard lines only — no goblins or demons in here."
+          : "";
+  // Filter the board to the requested league up front so EVERY plan respects
+  // "WNBA only" / "just NBA" etc. (case-insensitive against the board's sport).
+  const pool = sport ? props.filter((p) => p.sport.toUpperCase() === sport) : props;
+  if (sport && pool.length === 0) {
+    return {
+      id: `a-${Date.now()}`,
+      role: "assistant",
+      text: `There are no ${sport} props on the board right now, so I can't build a ${sport}-only plan. Try another league or drop the sport filter.`,
+    };
+  }
 
   if (budget === null) {
     return {
@@ -640,25 +790,58 @@ function respond(
     const entryEach = Math.max(1, Math.floor((budget / count) * 100) / 100);
     // Honor an explicit "5 pick" size; otherwise size by intent.
     const size = requestedSize ?? (intent === "safe" ? 3 : intent === "lottery" ? 5 : 4);
-    const plan = buildPlan(
-      `${count} lineups`,
-      `${count} lineups at $${entryEach.toFixed(2)} each, ${size}-pick.`,
-      props,
-      entryEach,
-      size,
-      count,
-      projections,
-    );
+    // In consistent-only mode the steady pool can be thin, so step the size
+    // DOWN until we can fill it rather than padding with volatile picks. A
+    // smaller all-consistent slip beats a bigger slip with coinflips in it.
+    let plan: PlanOption | null = null;
+    let builtSize = size;
+    for (let s = size; s >= 2; s--) {
+      plan = buildPlan(
+        `${count} ${sport ? sport + " " : ""}lineups`,
+        `${count} ${sport ? sport + " " : ""}lineups at $${entryEach.toFixed(2)} each, ${s}-pick.`,
+        pool,
+        entryEach,
+        s,
+        count,
+        projections,
+        preference,
+        true, // fillToCount — the user named an explicit number; give them that many
+        consistentOnly,
+      );
+      if (plan) { builtSize = s; break; }
+      if (!consistentOnly) break; // only downsize in consistent mode
+    }
     if (plan) {
       const got = plan.lineupCount;
+      const downsizeNote =
+        consistentOnly && builtSize < size
+          ? ` (You asked for ${size} picks, but only ${builtSize} players cleared the consistency bar — a ${builtSize}-pick of steady players is safer than padding to ${size} with volatile ones.)`
+          : "";
+      // Label the card by what we ACTUALLY built, not what was requested — a
+      // "10 WNBA lineups" title over 3 cards reads as a bug.
+      plan.label = `${got} ${sport ? sport + " " : ""}${got === 1 ? "lineup" : "lineups"}`;
+      // Two distinct shortfall reasons: budget (can't afford N at $1 each) vs.
+      // a board too thin to form N different slips even after filling.
       const shortNote =
         requestedCount !== null && got < requestedCount
-          ? ` (You asked for ${requestedCount}; the board could only fund ${got} distinct ${got === 1 ? "slip" : "slips"} at $${entryEach.toFixed(2)} / the $1 minimum.)`
+          ? count < requestedCount
+            ? ` (You asked for ${requestedCount}, but $${budget.toFixed(2)} at PrizePicks' $1 minimum only covers ${got}.)`
+            : ` (You asked for ${requestedCount}, but the ${sport ? sport + " " : ""}board can only form ${got} valid ${builtSize}-pick ${got === 1 ? "slip" : "slips"} right now.)`
           : "";
+      // Overlap honesty: when we filled to the requested count off a thin board,
+      // the slips share picks — separate entries, but NOT independent shots, so
+      // "only need 1 of N to hit" is weaker than it sounds. Say so.
+      const overlap = got > 1 ? maxPairwiseOverlap(plan.lineups) : 0;
+      const overlapNote =
+        got > 1 && overlap >= builtSize - 1
+          ? ` Heads up: the ${sport ? sport + " " : ""}board is thin, so some of these share ${overlap} of ${builtSize} picks — they're ${got} separate entries but not ${got} independent shots (if the shared picks miss, several slips go down together).`
+          : got > 1 && overlap >= Math.ceil(builtSize / 2)
+            ? ` Note: these overlap by up to ${overlap} of ${builtSize} picks, so they're not fully independent.`
+            : "";
       const text =
-        `Here ${got === 1 ? "is" : "are"} ${got} ${got === 1 ? "lineup" : "lineups"} on your ` +
-        `$${budget.toFixed(2)} — $${entryEach.toFixed(2)} each.${shortNote} ${summarizePlan(plan)} ` +
-        `No play is guaranteed; this is the highest-profit-chance build at that size.` +
+        `Here ${got === 1 ? "is" : "are"} ${got} ${sport ? sport + " " : ""}${got === 1 ? "lineup" : "lineups"} on your ` +
+        `$${budget.toFixed(2)} — $${entryEach.toFixed(2)} each.${shortNote}${downsizeNote} ${summarizePlan(plan)} ` +
+        `No play is guaranteed; this is the highest-profit-chance build at that size.${styleNote}${consistencyNote}${overlapNote}` +
         `\n\nTap the card to expand the picks.`;
       return {
         id: `a-${Date.now()}`,
@@ -671,7 +854,7 @@ function respond(
     // Couldn't fill that many — fall through to the standard options below.
   }
 
-  const plans = generatePlans(props, budget, intent, projections);
+  const plans = generatePlans(pool, budget, intent, projections, preference, consistentOnly);
   if (plans.length === 0) {
     return {
       id: `a-${Date.now()}`,
@@ -696,6 +879,8 @@ function respond(
     `On a $${budget.toFixed(2)} budget against the live board I'd recommend ` +
     `the ${rec.label.toLowerCase()}: ${summarizePlan(rec)}` +
     intentNote +
+    styleNote +
+    consistencyNote +
     "\n\nTap any card to expand the picks.";
 
   return {
