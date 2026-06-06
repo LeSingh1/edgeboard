@@ -45,10 +45,12 @@ async function readJson<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await readFile(path, "utf8")) as T; } catch { return null; }
 }
 
-/** Is a train-all.ts process already running? Avoids double-launch. */
+/** Is a training process already running? Matches either the legacy full-train
+ *  script or the daily train/test cycle, so the watchdog never double-launches
+ *  while either is mid-run. */
 function trainingRunning(): boolean {
   try {
-    const out = execSync("pgrep -f train-all.ts", { encoding: "utf8" }).trim();
+    const out = execSync("pgrep -f '(train-all|daily-cycle)\\.ts'", { encoding: "utf8" }).trim();
     return out.length > 0;
   } catch {
     return false; // pgrep exits non-zero when no match
@@ -85,7 +87,9 @@ async function maybeRestartTraining(reason: string): Promise<string | null> {
   }
 
   const logFd = openSync(join(META, "manual-v2-run.log"), "a");
-  const child = spawn("npx", ["tsx", "scripts/train-all.ts"], {
+  // Spawn the daily cycle (not train-all directly) so a catch-up run honors the
+  // odd/even train-vs-test mode for the day it fires on.
+  const child = spawn("npx", ["tsx", "scripts/daily-cycle.ts"], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${TRAIN_HEAP_MB}` },

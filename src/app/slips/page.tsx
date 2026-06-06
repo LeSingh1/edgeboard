@@ -194,17 +194,17 @@ function BestSlipHero({ lineup, mode }: { lineup: Lineup; mode: RiskMode }) {
               className="font-[family-name:var(--font-display)] text-6xl md:text-8xl leading-none text-shadow-3"
               style={{
                 color:
-                  lineup.hitProbability >= 0.25
+                  (lineup.probProfit ?? lineup.hitProbability) >= 0.25
                     ? "#4ADE80"
-                    : lineup.hitProbability >= 0.10
+                    : (lineup.probProfit ?? lineup.hitProbability) >= 0.10
                       ? "#FFE600"
                       : "#F87171",
               }}
             >
-              {(lineup.hitProbability * 100).toFixed(1)}%
+              {((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}%
             </h2>
             <p className="text-white/70 text-base mt-2 uppercase tracking-wider font-bold">
-              Chance to hit
+              Chance to profit
             </p>
           </div>
 
@@ -374,16 +374,16 @@ function LineupCard({ lineup, index }: { lineup: Lineup; index: number }) {
           className="font-[family-name:var(--font-heading)] font-black text-3xl"
           style={{
             color:
-              lineup.hitProbability >= 0.25
+              (lineup.probProfit ?? lineup.hitProbability) >= 0.25
                 ? "#4ADE80"
-                : lineup.hitProbability >= 0.10
+                : (lineup.probProfit ?? lineup.hitProbability) >= 0.10
                   ? "#FFE600"
                   : "#F87171",
           }}
         >
-          {(lineup.hitProbability * 100).toFixed(1)}%
+          {((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}%
         </span>
-        <span className="text-xs text-white/50 font-bold uppercase tracking-wider">Chance</span>
+        <span className="text-xs text-white/50 font-bold uppercase tracking-wider">Profit</span>
       </div>
       <div className="text-white/60 text-xs mb-4 font-bold uppercase tracking-wider" title="Average dollars per play long-term · max possible payout if all picks land">
         Avg {lineup.expectedValue >= 0 ? "+" : ""}${lineup.expectedValue.toFixed(2)}/play · ${lineup.grossPayout.toFixed(0)} if hit

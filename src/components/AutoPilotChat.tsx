@@ -120,17 +120,43 @@ function parseIntent(message: string): Intent {
   return "balanced";
 }
 
-/** Pull an explicit lineup count out of "give me 3 lineups", "3 slips",
- *  "make 4 plays", etc. Only matches lineup-nouns (lineups / slips / plays /
- *  entries / tickets / boards) so it never grabs the budget number or a
- *  pick-size like "3-pick". Returns null when no count is requested. */
+/** Word-number → digit, so "one flex play lineup" reads as a count of 1. */
+const NUMBER_WORDS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+
+/** Pull an explicit lineup count out of "give me 3 lineups", "one flex play
+ *  lineup", "two slips", etc. Handles digits AND number-words, and tolerates a
+ *  couple of filler words between the number and "lineup/slip" (so "one flex
+ *  play lineup" reads as 1). Only matches lineup-nouns so it never grabs the
+ *  budget or a pick-size like "3-pick". Returns null when no count is asked. */
 function parseLineupCount(message: string): number | null {
-  const match = message
-    .toLowerCase()
-    .match(/(\d+)\s*(?:lineups?|slips?|plays?|entries|entry|tickets?|boards?)\b/);
+  const m = message.toLowerCase();
+  // Longest-first so "an"/"eleven" win over "a"/"one" in the alternation.
+  const numAlt = ["\\d+", ...Object.keys(NUMBER_WORDS).sort((a, b) => b.length - a.length)].join("|");
+  const toN = (s: string) => (/^\d+$/.test(s) ? Number(s) : NUMBER_WORDS[s] ?? NaN);
+  // (1) number directly before a lineup noun: "3 lineups", "one slip", "two plays".
+  // (2) number, 1-2 filler words, then lineup/slip: "one flex play lineup".
+  const direct = new RegExp(`\\b(${numAlt})\\s*(?:lineups?|slips?|plays?|entries|entry|tickets?|boards?)\\b`);
+  const spaced = new RegExp(`\\b(${numAlt})\\s+(?:\\w+\\s+){1,2}?(?:lineups?|slips?)\\b`);
+  const hit = m.match(direct) ?? m.match(spaced);
+  if (hit) {
+    const n = toN(hit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 12) return n;
+  }
+  return null;
+}
+
+/** Pull a requested picks-per-lineup size out of "5 pick flex", "a 6-pick",
+ *  "3 picks", etc. PrizePicks lineups are 2-6 picks, so anything outside that
+ *  is ignored. Returns null when no size is requested. Note: "pick" is NOT a
+ *  lineup-count noun, so this never collides with parseLineupCount. */
+function parsePickSize(message: string): number | null {
+  const match = message.toLowerCase().match(/(\d+)[\s-]*picks?\b/);
   if (match) {
     const n = Number(match[1]);
-    if (Number.isFinite(n) && n >= 1 && n <= 12) return n;
+    if (Number.isFinite(n) && n >= 2 && n <= 6) return n;
   }
   return null;
 }
@@ -606,11 +632,14 @@ function respond(
   // diversified. Falls through to the Safe/Balanced/Lottery options if the
   // board is too thin to fill them.
   const requestedCount = parseLineupCount(message);
-  if (requestedCount !== null) {
+  const requestedSize = parsePickSize(message);
+  if (requestedCount !== null || requestedSize !== null) {
     const maxAffordable = Math.floor(budget); // PrizePicks $1-per-slip minimum
-    const count = Math.max(1, Math.min(requestedCount, maxAffordable));
+    // Count defaults to 1 when only a pick-size was named ("a 5-pick flex").
+    const count = Math.max(1, Math.min(requestedCount ?? 1, maxAffordable));
     const entryEach = Math.max(1, Math.floor((budget / count) * 100) / 100);
-    const size = intent === "safe" ? 3 : intent === "lottery" ? 5 : 4;
+    // Honor an explicit "5 pick" size; otherwise size by intent.
+    const size = requestedSize ?? (intent === "safe" ? 3 : intent === "lottery" ? 5 : 4);
     const plan = buildPlan(
       `${count} lineups`,
       `${count} lineups at $${entryEach.toFixed(2)} each, ${size}-pick.`,
@@ -623,7 +652,7 @@ function respond(
     if (plan) {
       const got = plan.lineupCount;
       const shortNote =
-        got < requestedCount
+        requestedCount !== null && got < requestedCount
           ? ` (You asked for ${requestedCount}; the board could only fund ${got} distinct ${got === 1 ? "slip" : "slips"} at $${entryEach.toFixed(2)} / the $1 minimum.)`
           : "";
       const text =

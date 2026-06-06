@@ -58,6 +58,7 @@ export default function AutoPilotPage() {
   const router = useRouter();
   const setLineupResults = useLineupStore((s) => s.setResults);
   const byProp = useProjectionStore((s) => s.byProp);
+  const fetchProjection = useProjectionStore((s) => s.fetchOne);
 
   // Playoffs-only filter — pulled from settings + the live playoff cache.
   // When the user has flipped this on, we ask the warmup endpoint for the
@@ -99,6 +100,7 @@ export default function AutoPilotPage() {
   const [maxSpend, setMaxSpend] = useState<AutoOr<number>>("auto");
   const [sport, setSport] = useState<AutoOr<string>>("auto");
   const [crunching, setCrunching] = useState(false);
+  const [pricingPicks, setPricingPicks] = useState(false);
   const [result, setResult] = useState<AutoPilotResult | null>(null);
   // Ref to the results section so we can smooth-scroll it into view when
   // "Build my lineups" finishes. Without this, on tall screens the user
@@ -241,7 +243,36 @@ export default function AutoPilotPage() {
       resolved.entry,
       { sport: resolved.sport, realProjections: byProp, teamAllowlist: allowlist },
     );
-    setResult(r);
+
+    // Warm REAL calibrated projections (game-log model + isotonic calibration)
+    // for the handful of props that actually landed in these lineups, then
+    // re-score — so the displayed hit/profit/EV reflect the live model instead
+    // of PrizePicks-implied placeholders. Bounded to the picks shown (not the
+    // whole pool), fetched at the store's 3-at-a-time cap. Props the model
+    // can't price (ESPN gamelog unavailable) keep their implied fallback.
+    let finalResult = r;
+    const distinct = new Map<string, Prop>();
+    for (const l of r.lineups) for (const pk of l.picks) distinct.set(pk.prop.id, pk.prop);
+    if (distinct.size > 0) {
+      setPricingPicks(true);
+      try {
+        await Promise.all([...distinct.values()].map((p) => fetchProjection(p)));
+        const fresh = useProjectionStore.getState().byProp;
+        finalResult = buildAutoLineups(
+          board.props,
+          resolved.lineupSize,
+          resolved.lineupCount,
+          resolved.entry,
+          { sport: resolved.sport, realProjections: fresh, teamAllowlist: allowlist },
+        );
+      } catch {
+        /* keep the implied-priced result if warming fails */
+      } finally {
+        setPricingPicks(false);
+      }
+    }
+
+    setResult(finalResult);
     setResolvedParams(resolved);
     setCrunching(false);
 
@@ -708,7 +739,9 @@ export default function AutoPilotPage() {
                 <Sparkles size={22} strokeWidth={3} />
               )}
               {crunching
-                ? "Hunting picks..."
+                ? pricingPicks
+                  ? "Pricing picks with the live model…"
+                  : "Hunting picks..."
                 : spend.cantFit
                   ? "Over budget"
                   : allAuto
