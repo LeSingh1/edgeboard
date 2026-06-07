@@ -191,11 +191,16 @@ export default function AutoPilotPage() {
     return board.props.filter((p) => p.sport === sport).length;
   }, [board, sport]);
 
-  // Top leagues for the sport pills — capped at 8 to keep the row tidy.
+  // Sport pills. Collapsed to the top 8 by count to keep the row tidy; the
+  // "show all" toggle reveals every league — including segment props like
+  // NBA1Q / NBA2H / WNBA4Q that otherwise fall outside the top 8.
+  const [showAllLeagues, setShowAllLeagues] = useState(false);
   const leagueOptions = useMemo<LeagueSummary[]>(() => {
     if (!board) return [];
-    return [{ name: "ALL", count: board.total }, ...board.leagues.slice(0, 8)];
-  }, [board]);
+    const shown = showAllLeagues ? board.leagues : board.leagues.slice(0, 8);
+    return [{ name: "ALL", count: board.total }, ...shown];
+  }, [board, showAllLeagues]);
+  const hiddenLeagueCount = board ? Math.max(0, board.leagues.length - 8) : 0;
 
   // ── Spend math ─────────────────────────────────────────────────────────
   // Total spend = lineups × per-slip entry. The Max Spend cap (when set) trims
@@ -727,6 +732,14 @@ export default function AutoPilotPage() {
                     </button>
                   );
                 })}
+                {hiddenLeagueCount > 0 && (
+                  <button
+                    onClick={() => setShowAllLeagues((v) => !v)}
+                    className="px-3 py-2 rounded-full border-[3px] border-dashed border-white/30 text-white/70 hover:text-white hover:border-white/60 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-wider transition-all"
+                  >
+                    {showAllLeagues ? "Show less" : `+${hiddenLeagueCount} more (2H · 1Q · periods…)`}
+                  </button>
+                )}
               </div>
               {sport === "auto" && (
                 <p className="text-white/55 text-xs mt-3">

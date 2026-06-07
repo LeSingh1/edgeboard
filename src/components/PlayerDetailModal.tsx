@@ -97,11 +97,26 @@ export function PlayerDetailModal({
   // Last 5 games, chronological left→right so the most recent reads on the
   // right (the convention PrizePicks uses).
   const last5 = recent.slice(-5);
-  // Align the per-game metadata with the last-5 slice. recentMeta is 1:1
-  // with `recent`, so we take the same tail.
-  const last5Meta = recentMeta.slice(-5);
+  // Align the per-game metadata with the last-5 slice. ONLY when recentMeta is
+  // exactly 1:1 with recent — otherwise a length mismatch would pair a score
+  // with the WRONG game's date/opponent (the symptom this guard prevents across
+  // every pick and sport). Mismatched/absent meta falls back to "Game N".
+  const last5Meta = recentMeta.length === recent.length ? recentMeta.slice(-5) : [];
   const last5Avg =
     last5.length > 0 ? last5.reduce((a, b) => a + b, 0) / last5.length : 0;
+
+  // Segment props (2nd half, 1st quarter, a period, …) come from sport codes
+  // like WNBA2H / NHL2P / WNBA1Q. Their projection AND last-5 values are SCALED
+  // to the segment (e.g. full game × 0.5 for a 2nd half), so the chart numbers
+  // are not raw box scores. Label it instead of letting scaled values look like
+  // full-game results — the root cause of "these last 5 games are wrong".
+  const segmentLabel = (() => {
+    const m = /(\d)(H|Q|P)$/.exec(prop.sport ?? "");
+    if (!m) return null;
+    const ord = ["", "1st", "2nd", "3rd", "4th"][Number(m[1])] ?? `${m[1]}th`;
+    const unit = m[2] === "H" ? "Half" : m[2] === "Q" ? "Quarter" : "Period";
+    return `${ord} ${unit}`;
+  })();
 
   // Bar chart geometry — chartMax pads above the highest value so the tallest
   // bar doesn't clip the projection line.
@@ -275,6 +290,11 @@ export function PlayerDetailModal({
                       <div className="text-white/60 text-[11px] uppercase tracking-widest font-bold mt-2">
                         {prop.statType}
                       </div>
+                      {segmentLabel && (
+                        <div className="text-[#FFE600] text-[10px] uppercase tracking-widest font-black mt-1.5">
+                          {segmentLabel} only
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex gap-2 mt-4">
@@ -330,6 +350,9 @@ export function PlayerDetailModal({
                     >
                       <div className="text-white/55 text-[10px] uppercase tracking-widest font-bold mb-4">
                         Last {last5.length} games · {prop.statType}
+                        {segmentLabel && (
+                          <span className="text-[#FFE600]"> · {segmentLabel}, scaled from full game</span>
+                        )}
                       </div>
 
                       {/* Plot area */}

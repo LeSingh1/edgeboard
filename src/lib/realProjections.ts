@@ -1342,9 +1342,18 @@ export async function applyCalibrationToResult(
 
   if (Math.abs(corrected - chosen) < 1e-6) return result;
 
-  const calPMore = preferMore ? corrected : 1 - corrected;
+  const rawCalPMore = preferMore ? corrected : 1 - corrected;
+  // Guardrail: a sane isotonic correction NUDGES the probability; it should not
+  // flip a coinflip into a near-lock. Overfit/sparse per-(stat × oddsType)
+  // curves can map ~0.50 → ~0.95 (observed: WNBA Rebs+Asts), which then
+  // contradicts a projection mean sitting right on the line. Clamp the swing to
+  // ±0.20 so the directional correction survives but the absurd over-confidence
+  // (and the mean-vs-probability contradiction it creates) cannot.
+  const MAX_CAL_SWING = 0.2;
+  const rawSwing = rawCalPMore - result.pMore;
+  const swing = Math.max(-MAX_CAL_SWING, Math.min(MAX_CAL_SWING, rawSwing));
+  const calPMore = Math.max(0.02, Math.min(0.98, result.pMore + swing));
   const calPLess = 1 - calPMore;
-  const swing = calPMore - result.pMore;
   const calibrationAdjustment: ProjectionAdjustment = {
     label: playoffApplied ? "Calibration (playoff layered)" : "Calibration",
     shift: 0,
