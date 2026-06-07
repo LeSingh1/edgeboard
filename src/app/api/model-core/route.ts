@@ -55,6 +55,21 @@ interface CurrentRun {
   pid?: number;
 }
 
+interface RunHistoryEntry {
+  finishedAt?: string;
+  okCount?: number;
+  failedCount?: number;
+  sports?: {
+    sport: string;
+    status: string;
+    decision: "deployed-first" | "improved" | "refreshed" | "held" | null;
+    testLogLoss: number | null;
+    championLogLoss: number | null;
+    accuracy: number | null;
+    lift: number | null;
+  }[];
+}
+
 /** Pretty display names for the lowercase sport keys the pipeline uses. */
 const DISPLAY: Record<string, string> = {
   afl: "AFL", lol: "LoL", mlb: "MLB", nba: "NBA", ncaaf: "NCAAF", nfl: "NFL",
@@ -118,7 +133,7 @@ export async function GET() {
     readJson<ModelCheck>(join(root, "meta", "modelCheck.json")),
     readJson<Record<string, string>>(join(root, "meta", "lastTrainedAt.json")),
     readJson<CurrentRun>(join(root, "meta", "currentRun.json")),
-    readJson<unknown[]>(join(root, "meta", "runHistory.json")),
+    readJson<RunHistoryEntry[]>(join(root, "meta", "runHistory.json")),
   ]);
 
   const rows = check?.rows ?? [];
@@ -167,7 +182,7 @@ export async function GET() {
     return new Date(x.lastTrained) > new Date(acc) ? x.lastTrained : acc;
   }, null);
 
-  // Daily self-improvement cadence: even calendar day = TRAIN on today's games,
+  // Daily retrain cadence: even calendar day = TRAIN on today's games,
   // odd day = hold out today as a live TEST (the /loop the user set up).
   const day = new Date().getDate();
   const todaysMode = day % 2 === 0 ? "train" : "test";
@@ -183,6 +198,21 @@ export async function GET() {
     : Infinity;
   const trainingLive =
     !!current?.pid && pidAlive(current.pid) && heartbeatAgeMs < 5 * 60_000;
+
+  // Champion-challenger summary from the most recent run. Each daily retrain is
+  // scored against the live model on the same held-out games and only promoted
+  // if it is not meaningfully worse, so these counts are the honest readout of
+  // "did the model get better, stay current, or hold" on the last cycle.
+  const history = Array.isArray(runHistory) ? runHistory : [];
+  const lastRun = history.length ? history[history.length - 1] : null;
+  const lastRunSummary = lastRun
+    ? {
+        finishedAt: lastRun.finishedAt ?? null,
+        improved: (lastRun.sports ?? []).filter((s) => s.decision === "improved").length,
+        refreshed: (lastRun.sports ?? []).filter((s) => s.decision === "refreshed").length,
+        held: (lastRun.sports ?? []).filter((s) => s.decision === "held").length,
+      }
+    : null;
 
   return NextResponse.json({
     callsign: "EDGE-CORE",
@@ -211,7 +241,8 @@ export async function GET() {
       newestTrained,
       retrainCadence: "daily",
       todaysMode,
-      runHistoryCount: Array.isArray(runHistory) ? runHistory.length : 0,
+      runHistoryCount: history.length,
+      lastRun: lastRunSummary,
     },
     sports: sports.sort((a, b) => (b.accuracy ?? 0) - (a.accuracy ?? 0)),
     traits: TRAITS,

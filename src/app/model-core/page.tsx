@@ -26,7 +26,13 @@ interface Core {
   callsign: string; generatedAt: string; online: boolean;
   totals: { sports: number; healthy: number; totalSamples: number; trainSamples: number; avgAccuracy: number; avgLiftPct: number; modelVersion: string; checkedAt: string | null };
   live: { running: boolean; sport: string | null; phase: string | null; progressPct: number | null; lastUpdate: string | null };
-  memory: { newestTrained: string | null; retrainCadence: string; todaysMode: string; runHistoryCount: number };
+  memory: {
+    newestTrained: string | null;
+    retrainCadence: string;
+    todaysMode: string;
+    runHistoryCount: number;
+    lastRun: { finishedAt: string | null; improved: number; refreshed: number; held: number } | null;
+  };
   sports: Sport[];
   traits: { key: string; name: string; blurb: string; icon: string }[];
   projectionSignals: { name: string; detail: string }[];
@@ -348,8 +354,17 @@ export default function ModelCorePage() {
                 <div className="text-xs text-white/55">Last retrain</div>
                 <div className="text-xs font-mono text-white/80">{ago(core?.memory.newestTrained ?? null)}</div>
               </div>
+              {core?.memory.lastRun && (
+                <div className="flex items-center justify-between mt-2">
+                  <div className="text-xs text-white/55">Last cycle gate</div>
+                  <div className="text-xs font-mono">
+                    <span style={{ color: C }}>{core.memory.lastRun.improved} improved</span>
+                    <span className="text-white/40"> · {core.memory.lastRun.refreshed} refresh · {core.memory.lastRun.held} held</span>
+                  </div>
+                </div>
+              )}
               <p className="text-[11px] text-white/45 leading-relaxed mt-3 border-t border-white/10 pt-3">
-                On even days it trains on the day&apos;s games; on odd days it holds them out as a live test and grades itself. Each run keeps the model current and re-calibrated. It does not keep getting smarter without limit, accuracy is near its ceiling.
+                On even days it trains on the day&apos;s games; on odd days it holds them out as a live test. Each retrain is then scored against the currently deployed model on the same held-out games and only promoted if it is not meaningfully worse. A bad data day cannot degrade the model: it gets better when the new data helps and holds when it does not. Accuracy is near its ceiling, so gains are incremental, not unlimited.
               </p>
             </Panel>
 

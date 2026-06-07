@@ -1,4 +1,4 @@
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allAdapters } from "@/lib/sports/registry";
 import { runSport, type RunSportResult } from "./runSport";
@@ -71,6 +71,35 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineSummary> 
     Object.fromEntries(results.filter(r => r.status === "ok").map(r => [r.sport, summary.finishedAt])),
     null, 2,
   ));
+
+  // Append a run-history entry recording the champion-challenger decision per
+  // sport (improved / refreshed / held / deployed-first). This is the record
+  // that makes "is the model actually getting better day over day" answerable
+  // from data instead of asserted in copy. Kept bounded to the last 365 runs.
+  const historyPath = join(metaDir, "runHistory.json");
+  let history: unknown[] = [];
+  try {
+    const parsed = JSON.parse(await readFile(historyPath, "utf8"));
+    if (Array.isArray(parsed)) history = parsed;
+  } catch {
+    history = [];
+  }
+  history.push({
+    finishedAt: summary.finishedAt,
+    okCount,
+    failedCount,
+    sports: results.map((r) => ({
+      sport: r.sport,
+      status: r.status,
+      decision: r.decision ?? null,
+      testLogLoss: r.testMetrics?.logLoss ?? null,
+      championLogLoss: r.championLogLoss ?? null,
+      accuracy: r.testMetrics?.accuracy ?? null,
+      lift: r.testMetrics ? r.testMetrics.baselineLogLoss - r.testMetrics.logLoss : null,
+    })),
+  });
+  await writeFile(historyPath, JSON.stringify(history.slice(-365), null, 2));
+
   // Notification
   const mins = (summary.totalMs / 60000).toFixed(1);
   if (failedCount === 0) {

@@ -26,6 +26,7 @@
  */
 
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { SportAdapter, RawGame, SportArtifacts, CalibrationTable, TestMetrics } from "@/lib/sports/types";
 import type { ScoredPick } from "@/lib/backtest/aggregate";
 import type { ScoreOutput } from "@/lib/backtest/scoreModel";
@@ -55,6 +56,26 @@ export interface RunSportResult {
   error?: string;
   /** Held-out test metrics, when a test split was produced. */
   testMetrics?: TestMetrics;
+  /**
+   * Champion-challenger outcome for this run's deploy decision:
+   *  - "deployed-first": no live model existed, so the new one was deployed.
+   *  - "improved": new model beat the live one on the same held-out split.
+   *  - "refreshed": new model was within tolerance, deployed to stay current.
+   *  - "held": new model was meaningfully worse, the live model was KEPT.
+   */
+  decision?: "deployed-first" | "improved" | "refreshed" | "held";
+  /** The currently-deployed model's log-loss on this run's test split, when a
+   *  champion existed to compare against (null on the very first deploy). */
+  championLogLoss?: number | null;
+}
+
+/** Read + parse a JSON file, returning null if it is missing or malformed. */
+async function readJsonSafe<T>(path: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -324,6 +345,46 @@ export async function runSport(
     // Evaluate the held-out test split against the fitted curves.
     const testMetrics = evaluateTestSet(testPicks, calibration);
 
+    // --- Champion-challenger gate ---------------------------------------
+    // Before replacing the live model, score the CURRENTLY deployed
+    // calibration ("champion") on the exact same held-out split we just
+    // scored the new model ("challenger") on. We only promote the challenger
+    // when it is not meaningfully worse on identical data, so a bad data day
+    // can never quietly degrade the model. This is what turns the daily
+    // retrain into improve-or-hold instead of a blind overwrite.
+    //
+    // Lower log-loss is better. A small tolerance lets the model still refresh
+    // on new rosters/data when quality is essentially unchanged, while a real
+    // regression (> REGRESS_TOL worse) is rejected and the champion is kept.
+    let decision: RunSportResult["decision"] = "deployed-first";
+    let championLogLoss: number | null = null;
+    const championTable = await readJsonSafe<CalibrationTable>(
+      join(artifactsDir, sportKey, "calibration.json"),
+    );
+    if (championTable) {
+      const championMetrics = evaluateTestSet(testPicks, championTable);
+      championLogLoss = championMetrics.logLoss;
+      const REGRESS_TOL = 0.01; // allow up to 1% worse to stay current
+      if (testMetrics.logLoss < championMetrics.logLoss) decision = "improved";
+      else if (testMetrics.logLoss <= championMetrics.logLoss * (1 + REGRESS_TOL)) decision = "refreshed";
+      else decision = "held";
+    }
+
+    if (decision === "held") {
+      // The new model lost to the live one on the same games. Keep the
+      // champion deployed and report the attempt so run history records it.
+      await checkpoint("done", 1.0);
+      return {
+        sport: adapter.leagues[0],
+        status: "ok",
+        sampleSize: totalPicks,
+        durationMs: Date.now() - t0,
+        testMetrics,
+        decision,
+        championLogLoss,
+      };
+    }
+
     await checkpoint("deploy", 0.95);
     const artifacts: SportArtifacts = {
       calibration,
@@ -352,6 +413,8 @@ export async function runSport(
       sampleSize: totalPicks,
       durationMs: Date.now() - t0,
       testMetrics,
+      decision,
+      championLogLoss,
     };
   } catch (e) {
     return {
