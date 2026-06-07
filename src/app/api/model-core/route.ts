@@ -5,7 +5,7 @@ import { join } from "node:path";
 export const dynamic = "force-dynamic";
 
 /**
- * Model Core telemetry — one rich payload powering the JARVIS-style /model-core
+ * Model Core telemetry - one rich payload powering the JARVIS-style /model-core
  * HUD. Aggregates the live training pipeline's own outputs (no fabricated
  * numbers): the nightly model check, each deployed artifact's held-out test
  * metrics, the last-trained timestamps, and the in-flight run heartbeat.
@@ -62,13 +62,13 @@ const DISPLAY: Record<string, string> = {
   tennis: "TENNIS", wnba: "WNBA",
 };
 
-/** The model's "cognitive traits" — the actual decision layers in the
+/** The model's "cognitive traits" - the actual decision layers in the
  *  projection pipeline, surfaced as the HUD's personality readout. */
 const TRAITS = [
-  { key: "gamelog", name: "Game-Log Memory", blurb: "Builds every projection from real ESPN box scores — mean + spread over each player's last 26-59 games.", icon: "database" },
+  { key: "gamelog", name: "Game-Log Memory", blurb: "Builds every projection from real ESPN box scores, the mean and spread over each player's last 26 to 59 games.", icon: "database" },
   { key: "recency", name: "Recency Bias", blurb: "Weights recent form above season averages; a hot or cold streak bends the number.", icon: "flame" },
   { key: "context", name: "Context Awareness", blurb: "Layers playoff / matchup overlays on top of the base projection when the spot calls for it.", icon: "target" },
-  { key: "calibration", name: "Calibrated Humility", blurb: "An isotonic corrector rescales raw confidence to the observed hit rate — clamped so it can never overclaim.", icon: "scale" },
+  { key: "calibration", name: "Calibrated Humility", blurb: "An isotonic corrector rescales raw confidence to the observed hit rate, clamped so it can never overclaim.", icon: "scale" },
   { key: "consistency", name: "Consistency Instinct", blurb: "Favors steady, line-clearing players over boom-or-bust ones when picking the safest edges.", icon: "shield" },
   { key: "pushaverse", name: "Push Aversion", blurb: "Prefers half-point lines that cannot land exactly on the number and void the bet.", icon: "divide" },
 ];
@@ -151,7 +151,7 @@ export async function GET() {
     }),
   );
 
-  // Weighted aggregates (by held-out test sample size) — the honest overall.
+  // Weighted aggregates (by held-out test sample size) - the honest overall.
   const totalTestN = sports.reduce((s, x) => s + (x.testN || 0), 0) || 1;
   const totalSamples = sports.reduce((s, x) => s + (x.sampleSize || 0), 0);
   const trainSamples = sports.reduce((s, x) => s + (x.trainSamples || 0), 0);

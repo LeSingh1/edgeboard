@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * EDGE-CORE — a JARVIS-style holographic readout of the live projection model.
+ * EDGE-CORE - a JARVIS-style holographic readout of the live projection model.
  * Every number is pulled from /api/model-core (the real training pipeline's
  * outputs) and the panel re-polls every 15s, so as the nightly self-retrain
  * finishes each sport the core visibly "gets smarter". Pure framer-motion +
@@ -48,7 +48,7 @@ function fmtCompact(n: number): string {
   return String(Math.round(n));
 }
 function ago(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const h = (Date.now() - new Date(iso).getTime()) / 3_600_000;
   if (h < 1) return `${Math.round(h * 60)}m ago`;
   if (h < 48) return `${h.toFixed(1)}h ago`;
@@ -195,7 +195,7 @@ function SportRow({ s, i, max }: { s: Sport; i: number; max: number }) {
           initial={{ width: 0 }} animate={{ width: `${acc}%` }} transition={{ delay: 0.4 + i * 0.04, duration: 0.9, ease: [0.22, 1, 0.36, 1] }} />
       </div>
       <div className="flex items-center justify-between mt-1 text-[9px] font-mono text-white/35">
-        <span>+{(s.liftPct * 100).toFixed(1)}% edge · brier {s.brier?.toFixed(3) ?? "—"}</span>
+        <span>+{(s.liftPct * 100).toFixed(1)}% edge · brier {s.brier?.toFixed(3) ?? "-"}</span>
         <span style={{ color: s.healthy ? undefined : "#FFB020" }}>{s.verdict} · {ago(s.lastTrained)}</span>
       </div>
     </motion.div>
@@ -330,7 +330,7 @@ export default function ModelCorePage() {
 
         {/* main grid */}
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px_1fr] gap-6 mt-6 items-start">
-          {/* LEFT — memory + totals */}
+          {/* LEFT - memory + totals */}
           <div className="space-y-5">
             <Panel title="Self-Improving Memory" icon={Radio} delay={0.1}>
               <div className="flex items-center justify-between">
@@ -371,7 +371,7 @@ export default function ModelCorePage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2 text-white/50 text-sm">
-                  <CircleCheck size={15} style={{ color: "#4ADE80" }} /> Idle — models deployed &amp; healthy
+                  <CircleCheck size={15} style={{ color: "#4ADE80" }} /> Idle. Models deployed and healthy
                 </div>
               )}
             </Panel>
@@ -384,7 +384,7 @@ export default function ModelCorePage() {
             </div>
           </div>
 
-          {/* CENTER — reactor */}
+          {/* CENTER - reactor */}
           <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2, duration: 0.6 }}>
             {core && <Reactor accuracy={core.totals.avgAccuracy} live={core.live.running} lift={core.totals.avgLiftPct} />}
             <div className="text-center mt-2 font-mono text-[10px] text-white/40 tracking-widest">
@@ -392,7 +392,7 @@ export default function ModelCorePage() {
             </div>
           </motion.div>
 
-          {/* RIGHT — sport matrix */}
+          {/* RIGHT - sport matrix */}
           <Panel title="Sport Matrix" icon={Layers} delay={0.26}>
             <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
               {core?.sports.map((s, i) => (
@@ -500,7 +500,7 @@ export default function ModelCorePage() {
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.8 }}
           className="mt-8 flex items-center justify-between flex-wrap gap-3 border-t border-white/10 pt-4 font-mono text-[10px] text-white/40">
           <span>MODEL {core?.totals.modelVersion} · ISOTONIC-CALIBRATED · PUSH-AVERSE</span>
-          <span>HEALTH CHECK {core?.totals.checkedAt ? ago(core.totals.checkedAt) : "—"} · {core?.totals.healthy}/{core?.totals.sports} NOMINAL</span>
+          <span>HEALTH CHECK {core?.totals.checkedAt ? ago(core.totals.checkedAt) : "-"} · {core?.totals.healthy}/{core?.totals.sports} NOMINAL</span>
           <span style={{ color: C }}>● TELEMETRY LIVE · REFRESH 15s</span>
         </motion.div>
       </div>
