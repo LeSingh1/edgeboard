@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Database, Flame, Target, Scale, Shield, Divide, Cpu, Activity,
-  Brain, Radio, CircleCheck, Gauge, Layers, ListChecks, Server, FileText, Download,
+  Brain, Radio, CircleCheck, Gauge, Layers, ListChecks, Server, FileText, Download, Crosshair,
 } from "lucide-react";
 
 // ── Types (mirror /api/model-core) ──────────────────────────────────────────
@@ -29,6 +29,7 @@ interface Core {
   memory: { newestTrained: string | null; retrainCadence: string; todaysMode: string; runHistoryCount: number };
   sports: Sport[];
   traits: { key: string; name: string; blurb: string; icon: string }[];
+  projectionSignals: { name: string; detail: string }[];
   dataSources: { name: string; kind: string; detail: string }[];
   gradingCriteria: { name: string; role: string; detail: string }[];
 }
@@ -245,6 +246,9 @@ export default function ModelCorePage() {
       L.push(`  ${(s.name).padEnd(7)}  ${((s.accuracy ?? 0) * 100).toFixed(1)}%  ${(s.brier ?? 0).toFixed(3)}  ${s.logLoss.toFixed(3)}    ${s.baseline.toFixed(3)}     +${(s.liftPct * 100).toFixed(1)}%`.padEnd(58) + `${s.sampleSize.toLocaleString().padStart(12)}  ${s.verdict}`);
     }
     L.push("");
+    L.push("PROJECTION SIGNALS (context applied before the probability)");
+    for (const ps of core.projectionSignals) L.push(`  - ${ps.name}: ${ps.detail}`);
+    L.push("");
     L.push("HOW PICKS ARE GRADED");
     for (const c of core.gradingCriteria) L.push(`  - ${c.name} (${c.role}): ${c.detail}`);
     L.push("");
@@ -422,6 +426,30 @@ export default function ModelCorePage() {
                 </motion.div>
               );
             })}
+          </div>
+        </div>
+
+        {/* PROJECTION SIGNALS */}
+        <div className="mt-8">
+          <div className="flex items-center gap-2 mb-1">
+            <Crosshair size={15} style={{ color: C }} />
+            <h2 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-[0.3em] text-sm text-white/80">Projection signals</h2>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+          <p className="text-[11px] text-white/40 mb-3 max-w-3xl">
+            Context the model layers onto a player&apos;s baseline before it ever computes a probability. Not all of these fire on every pick (each needs enough data), and the richest context lands on NBA and WNBA.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {core?.projectionSignals.map((ps, i) => (
+              <motion.div key={ps.name} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 + i * 0.04 }}
+                className="rounded-xl border p-3.5" style={{ borderColor: `${C}22`, background: "rgba(10,18,30,0.4)" }}>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: C }} />
+                  <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-[11px] text-white">{ps.name}</span>
+                </div>
+                <p className="text-[11px] text-white/55 leading-relaxed mt-1.5">{ps.detail}</p>
+              </motion.div>
+            ))}
           </div>
         </div>
 

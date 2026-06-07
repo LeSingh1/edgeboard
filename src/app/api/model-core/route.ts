@@ -82,6 +82,24 @@ const DATA_SOURCES = [
   { name: "Trained calibrators", kind: "model", detail: "Per-sport isotonic regression artifacts, retrained daily, that correct the raw model's confidence to the observed hit rate." },
 ];
 
+/** The contextual layers the projection actually applies before it ever reaches
+ *  a probability. Each is a real adjustment in src/lib/realProjections.ts. Not
+ *  every one fires on every pick: each needs enough data (e.g. vs-opponent needs
+ *  2+ past meetings), and the richest context lands on NBA and WNBA where the
+ *  game log carries opponents and dates. Other sports get fewer of these. */
+const PROJECTION_SIGNALS = [
+  { name: "Recent form", detail: "Recent games are weighted above the season average, so a hot or cold streak bends the projection." },
+  { name: "Vs this opponent", detail: "The player's average specifically against the team they face, weighted by how many times they have played them. Needs 2+ meetings to fire." },
+  { name: "Home / road split", detail: "Separate home and away averages when there are at least 4 of each. Most players are measurably different on the road." },
+  { name: "Days of rest", detail: "Back-to-backs are a fatigue penalty and 3+ days off is fresh, compared against the player's own rest history." },
+  { name: "Opponent defense", detail: "Adjusts for how well the opposing team limits this stat, from a defense-ratings table (when one is loaded)." },
+  { name: "Breakout ceiling", detail: "Accounts for how often the player has spiked well above their average, so a real high ceiling is not flattened away." },
+  { name: "Game script", detail: "Expected blowout vs close game. Pace and garbage time change how much a player actually produces." },
+  { name: "Playoff context", detail: "A postseason overlay for playoff games, where rotations tighten and stars play more minutes." },
+  { name: "Press conference / news", detail: "A soft signal aggregated from team news, ESPN, and Claude-read press conferences (injuries, role changes). It nudges the number, it does not drive it." },
+  { name: "Kalshi market", detail: "Cross-checks the projection against the Kalshi prediction-market price when one exists for the event." },
+];
+
 /** The actual rules the app uses to choose and grade picks. */
 const GRADING_CRITERIA = [
   { name: "Calibrated probability", role: "primary", detail: "The hit probability after isotonic calibration, clamped to a +/-0.20 swing so a sparse bucket can never overclaim." },
@@ -197,6 +215,7 @@ export async function GET() {
     },
     sports: sports.sort((a, b) => (b.accuracy ?? 0) - (a.accuracy ?? 0)),
     traits: TRAITS,
+    projectionSignals: PROJECTION_SIGNALS,
     dataSources: DATA_SOURCES,
     gradingCriteria: GRADING_CRITERIA,
   });
