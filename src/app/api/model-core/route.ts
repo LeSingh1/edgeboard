@@ -65,7 +65,7 @@ const DISPLAY: Record<string, string> = {
 /** The model's "cognitive traits" - the actual decision layers in the
  *  projection pipeline, surfaced as the HUD's personality readout. */
 const TRAITS = [
-  { key: "gamelog", name: "Game-Log Memory", blurb: "Builds every projection from real ESPN box scores, the mean and spread over each player's last 26 to 59 games.", icon: "database" },
+  { key: "gamelog", name: "Game-Log Memory", blurb: "Builds every projection from real ESPN box scores, the mean and spread over each player's recent games.", icon: "database" },
   { key: "recency", name: "Recency Bias", blurb: "Weights recent form above season averages; a hot or cold streak bends the number.", icon: "flame" },
   { key: "context", name: "Context Awareness", blurb: "Layers playoff / matchup overlays on top of the base projection when the spot calls for it.", icon: "target" },
   { key: "calibration", name: "Calibrated Humility", blurb: "An isotonic corrector rescales raw confidence to the observed hit rate, clamped so it can never overclaim.", icon: "scale" },
@@ -77,8 +77,8 @@ const TRAITS = [
 const DATA_SOURCES = [
   { name: "ESPN game logs", kind: "box scores", detail: "Primary source. Per-player, per-game box scores for every league, going back years. Drives the projection mean and spread." },
   { name: "balldontlie API", kind: "box scores", detail: "NBA and WNBA enrichment. Fills gaps in player game history that ESPN does not expose." },
-  { name: "PrizePicks live board", kind: "lines", detail: "The lines and prop types being priced. Around 17,000 props at a time across all sports, refreshed every few minutes." },
-  { name: "Synthesized training rows", kind: "training", detail: "147 million (player, line, outcome) rows generated from historical game logs, used to fit and test the calibrators." },
+  { name: "PrizePicks live board", kind: "lines", detail: "The live lines and prop types being priced across every sport, refreshed every few minutes." },
+  { name: "Synthesized training rows", kind: "training", detail: "Synthesized (player, line, outcome) rows generated from historical game logs, used to fit and test the calibrators. The live count is the Total Data figure above." },
   { name: "Trained calibrators", kind: "model", detail: "Per-sport isotonic regression artifacts, retrained daily, that correct the raw model's confidence to the observed hit rate." },
 ];
 
