@@ -398,6 +398,19 @@ export function buildAutoLineups(
 
     const best = bestVariant(vs, real, preference);
     if (!best) continue;
+
+    // Push-safe filter (learned from a real losing slip). A WHOLE-NUMBER line
+    // can land exactly on the number and PUSH: Power voids the leg, Flex drops
+    // it to the lower payout tier. autoScore only down-weights integer lines
+    // (×0.72), which still let one ride into a "safe" slip — a 5-pick consistent
+    // build carried Olivia Miles Under 6 assists, she landed on exactly 6, and
+    // the push knocked the slip down a full flex tier. In a safe posture
+    // (favor-consistency default or consistent-only) the point is to remove
+    // avoidable loss paths, so here we EXCLUDE integer lines outright rather
+    // than merely ranking them lower. Balanced/aggressive builds keep the
+    // softer down-weight so a strong whole-number pick can still surface.
+    if ((favorConsistency || consistentOnly) && Number.isInteger(best.prop.line)) continue;
+
     // Probability floor. Demons are intentionally < 50% to hit, so a demon
     // preference would be filtered to nothing under the default 0.50 floor —
     // relax it for picks that match the preferred style the user opted into.
