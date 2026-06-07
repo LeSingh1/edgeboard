@@ -73,6 +73,27 @@ const TRAITS = [
   { key: "pushaverse", name: "Push Aversion", blurb: "Prefers half-point lines that cannot land exactly on the number and void the bet.", icon: "divide" },
 ];
 
+/** Where the model's inputs actually come from. */
+const DATA_SOURCES = [
+  { name: "ESPN game logs", kind: "box scores", detail: "Primary source. Per-player, per-game box scores for every league, going back years. Drives the projection mean and spread." },
+  { name: "balldontlie API", kind: "box scores", detail: "NBA and WNBA enrichment. Fills gaps in player game history that ESPN does not expose." },
+  { name: "PrizePicks live board", kind: "lines", detail: "The lines and prop types being priced. Around 17,000 props at a time across all sports, refreshed every few minutes." },
+  { name: "Synthesized training rows", kind: "training", detail: "147 million (player, line, outcome) rows generated from historical game logs, used to fit and test the calibrators." },
+  { name: "Trained calibrators", kind: "model", detail: "Per-sport isotonic regression artifacts, retrained daily, that correct the raw model's confidence to the observed hit rate." },
+];
+
+/** The actual rules the app uses to choose and grade picks. */
+const GRADING_CRITERIA = [
+  { name: "Calibrated probability", role: "primary", detail: "The hit probability after isotonic calibration, clamped to a +/-0.20 swing so a sparse bucket can never overclaim." },
+  { name: "Recent line-clear rate", role: "primary", detail: "How often the player actually cleared this line in recent games. Steady clearers rank above boom-or-bust players." },
+  { name: "Expected value", role: "primary", detail: "Slips are scored on the real PrizePicks flex and power payout tiers. The lowest flex tier cashes but loses money, so it is counted as a loss." },
+  { name: "Half-point lines", role: "filter", detail: "Picks on .5 lines are favored. A whole number can land exactly on the line and void the bet (a push)." },
+  { name: "Probability floor", role: "filter", detail: "In safe or consistent-only mode, coinflip picks below about 62% are dropped entirely." },
+  { name: "Correlation and reversion", role: "adjustment", detail: "Picks from the same game are penalized. They are not independent, and PrizePicks pays same-game slips less." },
+  { name: "Pick style", role: "preference", detail: "Green goblins (easier line), standard, or red demons (harder line, bigger payout) can be preferred or excluded." },
+  { name: "Quarter Kelly staking", role: "staking", detail: "Stake size is a quarter of the Kelly fraction, because the probability estimate itself has error and full Kelly is too aggressive." },
+];
+
 export async function GET() {
   const root = "data/training";
   const [check, lastTrained, current, runHistory] = await Promise.all([
@@ -176,5 +197,7 @@ export async function GET() {
     },
     sports: sports.sort((a, b) => (b.accuracy ?? 0) - (a.accuracy ?? 0)),
     traits: TRAITS,
+    dataSources: DATA_SOURCES,
+    gradingCriteria: GRADING_CRITERIA,
   });
 }

@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Database, Flame, Target, Scale, Shield, Divide, Cpu, Activity,
-  Brain, Radio, CircleCheck, Gauge, Layers,
+  Brain, Radio, CircleCheck, Gauge, Layers, ListChecks, Server, FileText, Download,
 } from "lucide-react";
 
 // ── Types (mirror /api/model-core) ──────────────────────────────────────────
@@ -29,6 +29,8 @@ interface Core {
   memory: { newestTrained: string | null; retrainCadence: string; todaysMode: string; runHistoryCount: number };
   sports: Sport[];
   traits: { key: string; name: string; blurb: string; icon: string }[];
+  dataSources: { name: string; kind: string; detail: string }[];
+  gradingCriteria: { name: string; role: string; detail: string }[];
 }
 
 const TRAIT_ICONS: Record<string, typeof Database> = {
@@ -218,6 +220,50 @@ export default function ModelCorePage() {
   const samples = useCount(core?.totals.totalSamples ?? 0, 1600);
   const maxSample = core ? Math.max(...core.sports.map((s) => s.sampleSize)) : 1;
 
+  // Build a full plain-text report from the live telemetry and download it.
+  // Everything in it is real (read from the trained artifacts), nothing invented.
+  function downloadReport() {
+    if (!core) return;
+    const t = core.totals;
+    const L = [];
+    L.push("EDGE-CORE MODEL REPORT");
+    L.push("generated " + new Date(core.generatedAt).toISOString());
+    L.push("");
+    L.push("OVERVIEW");
+    L.push(`  model            ${t.modelVersion}`);
+    L.push(`  leagues          ${t.sports} (${t.healthy} healthy)`);
+    L.push(`  training rows    ${t.totalSamples.toLocaleString()}`);
+    L.push(`  weighted acc     ${(t.avgAccuracy * 100).toFixed(1)}%`);
+    L.push(`  edge vs baseline +${(t.avgLiftPct * 100).toFixed(1)}%`);
+    L.push(`  retrain cadence  daily (today is a ${core.memory.todaysMode} day)`);
+    L.push(`  last retrain     ${core.memory.newestTrained ?? "unknown"}`);
+    L.push(`  live now         ${core.live.running ? `${core.live.sport?.toUpperCase()} ${core.live.phase} ${(((core.live.progressPct ?? 0)) * 100).toFixed(0)}%` : "idle"}`);
+    L.push("");
+    L.push("PER-SPORT RESULTS (held-out test split)");
+    L.push("  sport    acc     brier  logloss  baseline  lift     samples       status");
+    for (const s of core.sports) {
+      L.push(`  ${(s.name).padEnd(7)}  ${((s.accuracy ?? 0) * 100).toFixed(1)}%  ${(s.brier ?? 0).toFixed(3)}  ${s.logLoss.toFixed(3)}    ${s.baseline.toFixed(3)}     +${(s.liftPct * 100).toFixed(1)}%`.padEnd(58) + `${s.sampleSize.toLocaleString().padStart(12)}  ${s.verdict}`);
+    }
+    L.push("");
+    L.push("HOW PICKS ARE GRADED");
+    for (const c of core.gradingCriteria) L.push(`  - ${c.name} (${c.role}): ${c.detail}`);
+    L.push("");
+    L.push("DATA SOURCES");
+    for (const d of core.dataSources) L.push(`  - ${d.name} (${d.kind}): ${d.detail}`);
+    L.push("");
+    L.push("COGNITIVE TRAITS (decision layers)");
+    for (const tr of core.traits) L.push(`  - ${tr.name}: ${tr.blurb}`);
+    L.push("");
+    L.push("Not financial advice. Sports betting has a built-in house edge and most people lose.");
+    const blob = new Blob([L.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `edge-core-report-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden" style={{ background: "#03070E" }}>
       {/* ambient grid + glow */}
@@ -226,9 +272,6 @@ export default function ModelCorePage() {
         backgroundSize: "44px 44px", maskImage: "radial-gradient(circle at 50% 38%, black, transparent 78%)", WebkitMaskImage: "radial-gradient(circle at 50% 38%, black, transparent 78%)",
       }} />
       <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(circle at 50% 30%, ${C}12 0%, transparent 60%)` }} />
-      {/* scanline sweep */}
-      <motion.div className="pointer-events-none absolute left-0 right-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${C}, transparent)`, opacity: 0.25 }}
-        animate={{ top: ["0%", "100%"] }} transition={{ duration: 6, repeat: Infinity, ease: "linear" }} />
 
       {/* boot overlay */}
       <AnimatePresence>
@@ -260,12 +303,24 @@ export default function ModelCorePage() {
               <div className="text-[10px] text-white/45 font-mono">{core?.totals.modelVersion ?? "…"} · self-improving · retrains daily</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <motion.span className="w-2 h-2 rounded-full" style={{ background: core?.online ? "#4ADE80" : "#F87171" }}
-              animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.6, repeat: Infinity }} />
-            <span className="text-xs font-mono uppercase tracking-widest" style={{ color: core?.online ? "#4ADE80" : "#F87171" }}>
-              {err ? "link lost" : core?.online ? "online" : "booting"}
-            </span>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={downloadReport}
+              disabled={!core}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg border text-xs font-bold uppercase tracking-widest transition-colors disabled:opacity-40"
+              style={{ borderColor: `${C}55`, color: C, background: `${C}12` }}
+            >
+              <FileText size={13} strokeWidth={2.5} />
+              Generate report
+              <Download size={12} strokeWidth={2.5} className="opacity-70" />
+            </button>
+            <div className="flex items-center gap-2">
+              <motion.span className="w-2 h-2 rounded-full" style={{ background: core?.online ? "#4ADE80" : "#F87171" }}
+                animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.6, repeat: Infinity }} />
+              <span className="text-xs font-mono uppercase tracking-widest" style={{ color: core?.online ? "#4ADE80" : "#F87171" }}>
+                {err ? "link lost" : core?.online ? "online" : "booting"}
+              </span>
+            </div>
           </div>
         </motion.div>
 
@@ -367,6 +422,49 @@ export default function ModelCorePage() {
                 </motion.div>
               );
             })}
+          </div>
+        </div>
+
+        {/* HOW PICKS ARE GRADED */}
+        <div className="mt-8">
+          <div className="flex items-center gap-2 mb-3">
+            <ListChecks size={15} style={{ color: C }} />
+            <h2 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-[0.3em] text-sm text-white/80">How picks are graded</h2>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {core?.gradingCriteria.map((c, i) => (
+              <motion.div key={c.name} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + i * 0.05 }}
+                className="rounded-xl border p-4" style={{ borderColor: `${C}26`, background: "rgba(10,18,30,0.4)" }}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-xs text-white">{c.name}</span>
+                  <span className="text-[9px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded" style={{ color: C, background: `${C}14` }}>{c.role}</span>
+                </div>
+                <p className="text-[11px] text-white/55 leading-relaxed mt-1.5">{c.detail}</p>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+
+        {/* DATA SOURCES */}
+        <div className="mt-8">
+          <div className="flex items-center gap-2 mb-3">
+            <Server size={15} style={{ color: C }} />
+            <h2 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-[0.3em] text-sm text-white/80">Data sources</h2>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {core?.dataSources.map((d, i) => (
+              <motion.div key={d.name} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + i * 0.05 }}
+                className="rounded-xl border p-4 flex flex-col" style={{ borderColor: `${C}26`, background: "rgba(10,18,30,0.4)" }}>
+                <div className="flex items-center gap-2">
+                  <Database size={13} style={{ color: C }} />
+                  <span className="font-[family-name:var(--font-heading)] font-black uppercase tracking-wider text-xs text-white">{d.name}</span>
+                </div>
+                <span className="text-[9px] font-mono uppercase tracking-widest text-white/40 mt-1">{d.kind}</span>
+                <p className="text-[11px] text-white/55 leading-relaxed mt-1.5">{d.detail}</p>
+              </motion.div>
+            ))}
           </div>
         </div>
 
