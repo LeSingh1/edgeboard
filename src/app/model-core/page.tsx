@@ -4,7 +4,7 @@
  * EDGE-CORE - a JARVIS-style holographic readout of the live projection model.
  * Every number is pulled from /api/model-core (the real training pipeline's
  * outputs) and the panel re-polls every 15s, so as the nightly self-retrain
- * finishes each sport the core visibly "gets smarter". Pure framer-motion +
+ * finishes each sport the core updates with its fresh metrics. Pure framer-motion +
  * SVG; no 3D deps.
  */
 
@@ -304,7 +304,7 @@ export default function ModelCorePage() {
               <div className="font-[family-name:var(--font-heading)] font-black tracking-[0.3em] text-lg" style={{ color: "#fff" }}>
                 EDGE<span style={{ color: C }}>·</span>CORE
               </div>
-              <div className="text-[10px] text-white/45 font-mono">{core?.totals.modelVersion ?? "…"} · self-improving · retrains daily</div>
+              <div className="text-[10px] text-white/45 font-mono">{core?.totals.modelVersion ?? "…"} · retrains daily · re-calibrates</div>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -332,7 +332,7 @@ export default function ModelCorePage() {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px_1fr] gap-6 mt-6 items-start">
           {/* LEFT - memory + totals */}
           <div className="space-y-5">
-            <Panel title="Self-Improving Memory" icon={Radio} delay={0.1}>
+            <Panel title="Daily Retraining" icon={Radio} delay={0.1}>
               <div className="flex items-center justify-between">
                 <div className="text-xs text-white/55">Retrain cadence</div>
                 <div className="text-xs font-mono" style={{ color: C }}>EVERY 24H</div>
@@ -349,7 +349,7 @@ export default function ModelCorePage() {
                 <div className="text-xs font-mono text-white/80">{ago(core?.memory.newestTrained ?? null)}</div>
               </div>
               <p className="text-[11px] text-white/45 leading-relaxed mt-3 border-t border-white/10 pt-3">
-                On even days it learns from the day&apos;s games; on odd days it holds them out as a live test and grades itself. Every cycle the edge compounds.
+                On even days it trains on the day&apos;s games; on odd days it holds them out as a live test and grades itself. Each run keeps the model current and re-calibrated. It does not keep getting smarter without limit, accuracy is near its ceiling.
               </p>
             </Panel>
 
