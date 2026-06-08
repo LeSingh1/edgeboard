@@ -435,8 +435,9 @@ export default function AutoPilotPage() {
           Auto-Pilot
         </h1>
         <p className="text-white/70 text-lg mt-3 max-w-3xl">
-          No bench needed. Tell us how many lineups you want, we&apos;ll comb the entire
-          live board for the highest-probability picks and hand you back ready-to-play slips.
+          No bench needed. Leave every knob on Auto and the model decides how many slips,
+          how big, and what to play — or set any of them yourself. Either way we comb the
+          whole live board and hand back ready-to-play slips.
         </p>
         <p className="text-white/40 text-xs mt-2 uppercase tracking-widest font-bold max-w-3xl">
           {filteredCount.toLocaleString()} props in pool ·
@@ -912,7 +913,7 @@ export default function AutoPilotPage() {
                 : spend.cantFit
                   ? "Over budget"
                   : allAuto
-                    ? "Surprise me"
+                    ? "Build it — all auto"
                     : "Build my lineups"}
             </button>
             <p className="text-center text-white/50 text-xs">
