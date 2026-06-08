@@ -73,15 +73,18 @@ const MIN_AUTO_ENTRY = 5;
 const MAX_AUTO_LINEUPS = 5;
 
 /**
- * Auto entry-cost. $20 per slip by default, but LOWERED to fit a Max Spend cap
- * so a small cap still builds a slip instead of blocking the whole thing.
- * (Before this, Auto entry stayed $20 and a $10 cap just showed "Over budget"
- * forever — the bug this fixes.) Never drops below the $5 minimum; if the cap is
- * under $5 the build genuinely can't fit and the panel says so.
+ * Auto entry-cost. $20 per slip by default, but sized DOWN to fit `count` slips
+ * under a Max Spend cap, between the $5 minimum and the $20 default. So asking
+ * for 5 slips with a $50 cap lands $10 each (all 5 fit); a $10 cap drops to $5
+ * each and fits 2; a $10 cap with 1 slip stays $10. This is what lets an
+ * explicit slip count actually build more than one slip under a small cap,
+ * instead of stranding the budget on a single $20 entry. Never below the $5
+ * minimum — if the cap can't fit even one $5 slip the panel says so.
  */
-function autoEntryForCap(cap: number | null): number {
+function autoEntryForCap(cap: number | null, count: number): number {
   if (cap == null) return AUTO_ENTRY_DEFAULT;
-  return Math.min(AUTO_ENTRY_DEFAULT, Math.max(MIN_AUTO_ENTRY, cap));
+  const perSlip = Math.floor(cap / Math.max(1, count));
+  return Math.min(AUTO_ENTRY_DEFAULT, Math.max(MIN_AUTO_ENTRY, perSlip));
 }
 type AutoOr<T> = "auto" | T;
 
@@ -233,8 +236,12 @@ export default function AutoPilotPage() {
     const autoCount = lineupCount === "auto";
     const requested = autoCount ? MAX_AUTO_LINEUPS : lineupCount;
     const cap = maxSpend === "auto" ? null : maxSpend;
-    // Auto entry fits the cap (drops from $20 so a small cap still builds).
-    const effEntry = entry === "auto" ? autoEntryForCap(cap) : entry;
+    // Auto entry is sized to fit the requested slips under the cap. For an
+    // explicit count we size for that count (so picking 5 spreads the budget
+    // across up to 5 slips); on Auto the model decides the count, so we just
+    // fit one and let it scale up from there.
+    const entryTarget = autoCount ? 1 : lineupCount;
+    const effEntry = entry === "auto" ? autoEntryForCap(cap, entryTarget) : entry;
     const fitCount = cap != null ? Math.floor(cap / effEntry) : requested;
     const cantFit = cap != null && fitCount < 1;
     const finalCount = cap != null ? Math.max(0, Math.min(requested, fitCount)) : requested;
@@ -277,10 +284,12 @@ export default function AutoPilotPage() {
     // Resolve entry + count, then apply the Max Spend cap by trimming the
     // lineup count so count × entry never exceeds it.
     const cap = maxSpend === "auto" ? null : maxSpend;
-    // Auto entry fits the cap (drops from $20 so a small cap still builds one
-    // slip instead of blocking). An explicit entry is used as-is.
-    const baseEntry = entry === "auto" ? autoEntryForCap(cap) : entry;
     const isAutoCount = lineupCount === "auto";
+    // Auto entry is sized to fit the requested slips under the cap (explicit
+    // count → that many; Auto → fit one and let the model scale). An explicit
+    // entry is used as-is.
+    const entryTarget = isAutoCount ? 1 : lineupCount;
+    const baseEntry = entry === "auto" ? autoEntryForCap(cap, entryTarget) : entry;
     // When the user explicitly picked a count, fill to it (allow overlap on a
     // thin board). On Auto we never pad — fewer-but-distinct is the whole point.
     const fillToCount = !isAutoCount;
@@ -534,6 +543,12 @@ export default function AutoPilotPage() {
                   Auto — the model builds only the slips it judges worth playing
                   (1 to {MAX_AUTO_LINEUPS}), capped by Max Spend. One standout returns one slip.
                 </>
+              ) : spend.trimmed ? (
+                <>
+                  You picked {lineupCount}, but your ${maxSpend} Max Spend only fits{" "}
+                  <span className="text-[#FFE600] font-bold">{spend.finalCount}</span>. Raise the
+                  cap (or lower it) to change how many build.
+                </>
               ) : (
                 <>
                   We&apos;ll return your top {lineupCount}{" "}
@@ -674,13 +689,23 @@ export default function AutoPilotPage() {
                   )}
                 </span>
               ) : spend.trimmed ? (
-                <>
-                  ${maxSpend} cap — trimmed to{" "}
-                  <span className="text-[#4ADE80] font-bold">
-                    {spend.finalCount} {spend.finalCount === 1 ? "slip" : "slips"}
-                  </span>{" "}
-                  so total stays ${spend.finalTotal}.
-                </>
+                lineupCount !== "auto" ? (
+                  <>
+                    ${maxSpend} cap fits{" "}
+                    <span className="text-[#4ADE80] font-bold">
+                      {spend.finalCount} of your {lineupCount} slips
+                    </span>{" "}
+                    at ${spend.effEntry} each. Raise to ${lineupCount * MIN_AUTO_ENTRY} to fit all {lineupCount}.
+                  </>
+                ) : (
+                  <>
+                    ${maxSpend} cap — trimmed to{" "}
+                    <span className="text-[#4ADE80] font-bold">
+                      {spend.finalCount} {spend.finalCount === 1 ? "slip" : "slips"}
+                    </span>{" "}
+                    so total stays ${spend.finalTotal}.
+                  </>
+                )
               ) : (
                 <>${maxSpend} cap — current plan fits (${spend.plannedTotal} total).</>
               )}
@@ -816,7 +841,7 @@ export default function AutoPilotPage() {
                 You&apos;ll get back
               </div>
               <div className="font-[family-name:var(--font-display)] text-6xl text-[#FFE600] leading-none mt-1 text-shadow-2 flex items-baseline gap-2">
-                {spend.autoCount ? `≤${spend.finalCount}` : lineupCount}
+                {spend.autoCount ? `≤${spend.finalCount}` : spend.finalCount}
                 {spend.autoCount && (
                   <span className="font-[family-name:var(--font-heading)] text-xs uppercase tracking-widest text-[#FFE600]/80 font-black">
                     auto
