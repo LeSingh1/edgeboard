@@ -94,6 +94,27 @@ function meanStd(values: number[]): { mean: number; std: number } {
   return { mean, std: Math.sqrt(variance) };
 }
 
+/**
+ * Recency-weighted (exponential) mean. The newest game gets weight 1 and each
+ * game further back is discounted by `decay = 0.5^(1/halfLife)`, so a game
+ * `halfLife` back counts half as much as the latest. Recent form predicts the
+ * next game better than season-old games, so the base projection blends this
+ * with the equal-weighted mean (see buildResult / MODEL_CONSTANTS.recencyBlend).
+ * `values` must be in chronological order (oldest first, newest last).
+ */
+function recencyWeightedMean(values: number[], halfLife: number): number {
+  const decay = Math.pow(0.5, 1 / halfLife);
+  const n = values.length;
+  let wSum = 0;
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    const w = Math.pow(decay, n - 1 - i); // i = n-1 (newest) -> w = 1
+    wSum += w;
+    acc += w * values[i];
+  }
+  return acc / wSum;
+}
+
 /** Abramowitz-Stegun approximation of normal CDF. */
 function cdfNormal(z: number): number {
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
@@ -113,7 +134,16 @@ function buildResult(values: number[], line: number, source: string, modelVersio
   if (values.length < 5) {
     return { available: false, reason: `Only ${values.length} games — need at least 5` };
   }
-  const { mean, std } = meanStd(values);
+  const { mean: equalMean, std } = meanStd(values);
+  // Base mean = blend of the equal-weighted mean and a recency-weighted mean.
+  // Recent games predict the next game better than season-old ones, so we pull
+  // the projection toward recent form. Backtested on real game logs (see
+  // MODEL_CONSTANTS.recencyBlend): improves held-out log-loss and Brier. The
+  // full-history std below is kept as the spread — it is the more stable
+  // dispersion estimate, and the backtest's best variant paired the blended
+  // mean with the full-history std.
+  const recentMean = recencyWeightedMean(values, C.recencyHalfLife);
+  const mean = C.recencyBlend * equalMean + (1 - C.recencyBlend) * recentMean;
   // Floor sigma so we don't divide by ~0 for very tight stats. The
   // multiplier is now tunable via MODEL_CONSTANTS so the offline tuner
   // can search for a value that calibrates the model better.
