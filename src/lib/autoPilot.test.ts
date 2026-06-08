@@ -1,7 +1,35 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildAutoLineups } from "./autoPilot";
+import { buildAutoLineups, recommendLineupCount } from "./autoPilot";
 import type { Prop } from "./types";
+
+describe("recommendLineupCount — model decides how many slips", () => {
+  const L = (probProfit: number) => ({ probProfit, hitProbability: probProfit });
+
+  it("returns 1 when there is a single standout and the rest fall off a cliff", () => {
+    const lineups = [L(0.7), L(0.45), L(0.42), L(0.4)]; // #2 is 25pp below best
+    assert.equal(recommendLineupCount(lineups, 5), 1);
+  });
+
+  it("returns several when they are genuinely comparable", () => {
+    const lineups = [L(0.62), L(0.6), L(0.58), L(0.3)]; // top 3 within 8pp, then a cliff
+    assert.equal(recommendLineupCount(lineups, 5), 3);
+  });
+
+  it("never includes a slip below the 40% profit floor, even if close to best", () => {
+    const lineups = [L(0.41), L(0.39), L(0.38)]; // best barely clears; rest under floor
+    assert.equal(recommendLineupCount(lineups, 5), 1);
+  });
+
+  it("respects the ceiling (Max Spend cap)", () => {
+    const lineups = [L(0.7), L(0.69), L(0.68), L(0.67)]; // all comparable
+    assert.equal(recommendLineupCount(lineups, 2), 2);
+  });
+
+  it("returns 0 when there are no lineups", () => {
+    assert.equal(recommendLineupCount([], 5), 0);
+  });
+});
 
 /** Minimal valid Prop; override per case. */
 function mkProp(over: Partial<Prop>): Prop {

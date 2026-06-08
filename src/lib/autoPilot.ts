@@ -279,6 +279,41 @@ export function pickAutoSize(
 }
 
 /**
+ * Model-driven lineup COUNT. Given the lineups the optimizer actually produced
+ * (ranked best-first) and a ceiling, decide how many are worth playing instead
+ * of forcing a fixed number. The signal is each lineup's `probProfit` (the
+ * honest chance it returns more than its entry; falls back to hitProbability).
+ *
+ * Rule: always keep the single best, then keep each next lineup only while it
+ * stays within `DROP` of the best AND clears an absolute floor. So one standout
+ * on a thin board returns 1; several genuinely comparable slips return several;
+ * a board with nothing strong still returns 1 (the user asked to build, and the
+ * card's own metrics show how weak it is). This is "what the model thinks is
+ * best, whether that is 1 slip or 5", not a hardcoded 3.
+ *
+ * DROP / FLOOR are heuristics, deliberately conservative so Auto leans toward
+ * fewer, stronger slips rather than padding the count.
+ */
+export function recommendLineupCount(
+  lineups: { probProfit?: number; hitProbability: number }[],
+  ceiling: number,
+): number {
+  if (lineups.length === 0 || ceiling < 1) return Math.min(lineups.length, Math.max(0, ceiling));
+  const q = (l: { probProfit?: number; hitProbability: number }) =>
+    l.probProfit ?? l.hitProbability;
+  const sorted = [...lineups].sort((a, b) => q(b) - q(a));
+  const best = q(sorted[0]);
+  const DROP = 0.08; // a slip must be within 8pp of the best to ride along
+  const FLOOR = 0.4; // and never a slip below 40% to actually profit
+  let n = 1; // always keep the single best
+  for (let i = 1; i < sorted.length && n < ceiling; i++) {
+    if (q(sorted[i]) >= Math.max(FLOOR, best - DROP)) n++;
+    else break; // ranked, so once one falls off the rest do too
+  }
+  return n;
+}
+
+/**
  * Autopilot candidate score. Blends raw probability with a pick-type factor
  * so the pool ranking favors (1) consistent standard over/under picks, then
  * (2) goblins for their better payout-per-risk profile, then (3) demons last.

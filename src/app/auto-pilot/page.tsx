@@ -24,7 +24,7 @@ import {
   Scale,
 } from "lucide-react";
 import type { OddsPreference } from "@/lib/autoPilot";
-import { buildAutoLineups, pickAutoSize, type AutoPilotResult } from "@/lib/autoPilot";
+import { buildAutoLineups, pickAutoSize, recommendLineupCount, type AutoPilotResult } from "@/lib/autoPilot";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -56,14 +56,19 @@ const ODDS_PREFERENCES: {
 ];
 
 /**
- * Defaults used whenever a control is left on "auto":
- *   count → 3   (gives variety without being overwhelming)
+ * Defaults / bounds used whenever a control is left on "auto":
+ *   count → model-decided at build time (1..MAX_AUTO_LINEUPS) via
+ *           recommendLineupCount, capped by Max Spend
  *   size  → resolved at run-time by pickAutoSize() against the live board
  *   entry → $20 (PrizePicks median single-slip ticket)
  *   sport → ALL (no filter — auto = "we choose")
  */
-const AUTO_COUNT_DEFAULT = 3;
 const AUTO_ENTRY_DEFAULT = 20;
+// Ceiling the model may use when count is on Auto. It builds up to this many
+// distinct slips, then keeps only the ones genuinely worth playing (see
+// recommendLineupCount) — so Auto returns 1 when there is one standout and more
+// only when several are real, never padding to a fixed number.
+const MAX_AUTO_LINEUPS = 5;
 type AutoOr<T> = "auto" | T;
 
 interface ApiResponse {
@@ -208,20 +213,25 @@ export default function AutoPilotPage() {
   // the cap, the build is blocked. Resolves "auto" knobs to their defaults so
   // the panel always shows a concrete dollar figure.
   const spend = useMemo(() => {
-    const effCount = lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount;
+    // On Auto the model decides the real count at build time (1..ceiling), so
+    // the preview shows the ceiling as an upper bound ("up to"). With an
+    // explicit count it is exact.
+    const autoCount = lineupCount === "auto";
+    const requested = autoCount ? MAX_AUTO_LINEUPS : lineupCount;
     const effEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
     const cap = maxSpend === "auto" ? null : maxSpend;
-    const fitCount = cap != null ? Math.floor(cap / effEntry) : effCount;
+    const fitCount = cap != null ? Math.floor(cap / effEntry) : requested;
     const cantFit = cap != null && fitCount < 1;
-    const finalCount = cap != null ? Math.max(0, Math.min(effCount, fitCount)) : effCount;
+    const finalCount = cap != null ? Math.max(0, Math.min(requested, fitCount)) : requested;
     return {
-      effCount,
+      autoCount,
+      effCount: finalCount,
       effEntry,
       cap,
-      plannedTotal: effCount * effEntry,
+      plannedTotal: requested * effEntry,
       finalCount,
       finalTotal: finalCount * effEntry,
-      trimmed: cap != null && finalCount < effCount && !cantFit,
+      trimmed: cap != null && finalCount < requested && !cantFit,
       cantFit,
     };
   }, [lineupCount, entry, maxSpend]);
@@ -252,21 +262,26 @@ export default function AutoPilotPage() {
     // Resolve entry + count, then apply the Max Spend cap by trimming the
     // lineup count so count × entry never exceeds it.
     const baseEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
-    const baseCount = lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount;
+    const isAutoCount = lineupCount === "auto";
     // When the user explicitly picked a count, fill to it (allow overlap on a
-    // thin board) rather than collapsing to the strictly-distinct few.
-    const fillToCount = lineupCount !== "auto";
+    // thin board). On Auto we never pad — fewer-but-distinct is the whole point.
+    const fillToCount = !isAutoCount;
     const cap = maxSpend === "auto" ? null : maxSpend;
-    const cappedCount =
-      cap != null ? Math.max(0, Math.min(baseCount, Math.floor(cap / baseEntry))) : baseCount;
+    // Build ceiling: how many slips the optimizer may produce before the model
+    // trims to the ones worth playing. On Auto that is up to MAX_AUTO_LINEUPS;
+    // with an explicit count it is that count. Max Spend caps it either way so
+    // count × entry can never exceed the cap.
+    const requested = isAutoCount ? MAX_AUTO_LINEUPS : lineupCount;
+    const buildCeiling =
+      cap != null ? Math.max(0, Math.min(requested, Math.floor(cap / baseEntry))) : requested;
     // Guard: per-slip entry alone exceeds the cap — nothing fits, so bail
     // (the Build button is disabled in this state; this is belt-and-suspenders).
-    if (cappedCount < 1) {
+    if (buildCeiling < 1) {
       setCrunching(false);
       return;
     }
     const resolved = {
-      lineupCount: cappedCount,
+      lineupCount: buildCeiling,
       lineupSize:
         lineupSize === "auto" ? pickAutoSize(board.props, optionsForSizing) : lineupSize,
       entry: baseEntry,
@@ -307,6 +322,17 @@ export default function AutoPilotPage() {
       } finally {
         setPricingPicks(false);
       }
+    }
+
+    // Model-driven COUNT. On Auto, keep only the slips the model judges worth
+    // playing — recommendLineupCount returns 1 when there is a single standout
+    // and more only when several are genuinely comparable, capped by the build
+    // ceiling. This makes Auto "what the model thinks is best, whether that is
+    // 1 slip or 5" instead of a hardcoded number. Explicit counts pass through.
+    if (isAutoCount) {
+      const n = recommendLineupCount(finalResult.lineups, buildCeiling);
+      finalResult = { ...finalResult, lineups: finalResult.lineups.slice(0, n) };
+      resolved.lineupCount = n;
     }
 
     setResult(finalResult);
@@ -486,7 +512,10 @@ export default function AutoPilotPage() {
             </div>
             <p className="text-white/55 text-xs mt-3">
               {lineupCount === "auto" ? (
-                <>Auto — we&apos;ll give you {AUTO_COUNT_DEFAULT} distinct slips.</>
+                <>
+                  Auto — the model builds only the slips it judges worth playing
+                  (1 to {MAX_AUTO_LINEUPS}), capped by Max Spend. One standout returns one slip.
+                </>
               ) : (
                 <>
                   We&apos;ll return your top {lineupCount}{" "}
@@ -571,7 +600,7 @@ export default function AutoPilotPage() {
             </div>
             {entry === "auto" && (
               <p className="text-white/55 text-xs mt-3">
-                Auto — defaults to ${AUTO_ENTRY_DEFAULT} per slip.
+                Auto — ${AUTO_ENTRY_DEFAULT} per slip. Max Spend caps how many slips, not the per-slip size.
               </p>
             )}
           </ControlCard>
@@ -763,8 +792,8 @@ export default function AutoPilotPage() {
                 You&apos;ll get back
               </div>
               <div className="font-[family-name:var(--font-display)] text-6xl text-[#FFE600] leading-none mt-1 text-shadow-2 flex items-baseline gap-2">
-                {lineupCount === "auto" ? AUTO_COUNT_DEFAULT : lineupCount}
-                {lineupCount === "auto" && (
+                {spend.autoCount ? `≤${spend.finalCount}` : lineupCount}
+                {spend.autoCount && (
                   <span className="font-[family-name:var(--font-heading)] text-xs uppercase tracking-widest text-[#FFE600]/80 font-black">
                     auto
                   </span>
@@ -813,6 +842,7 @@ export default function AutoPilotPage() {
                     </span>
                   ) : (
                     <>
+                      {spend.autoCount && "up to "}
                       {spend.finalCount} {spend.finalCount === 1 ? "slip" : "slips"} × $
                       {spend.effEntry}
                       {spend.cap != null && <> · cap ${spend.cap}</>}
