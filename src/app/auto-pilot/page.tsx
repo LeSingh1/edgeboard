@@ -64,11 +64,25 @@ const ODDS_PREFERENCES: {
  *   sport → ALL (no filter — auto = "we choose")
  */
 const AUTO_ENTRY_DEFAULT = 20;
+// PrizePicks-style minimum per-slip entry. Auto entry never goes below this.
+const MIN_AUTO_ENTRY = 5;
 // Ceiling the model may use when count is on Auto. It builds up to this many
 // distinct slips, then keeps only the ones genuinely worth playing (see
 // recommendLineupCount) — so Auto returns 1 when there is one standout and more
 // only when several are real, never padding to a fixed number.
 const MAX_AUTO_LINEUPS = 5;
+
+/**
+ * Auto entry-cost. $20 per slip by default, but LOWERED to fit a Max Spend cap
+ * so a small cap still builds a slip instead of blocking the whole thing.
+ * (Before this, Auto entry stayed $20 and a $10 cap just showed "Over budget"
+ * forever — the bug this fixes.) Never drops below the $5 minimum; if the cap is
+ * under $5 the build genuinely can't fit and the panel says so.
+ */
+function autoEntryForCap(cap: number | null): number {
+  if (cap == null) return AUTO_ENTRY_DEFAULT;
+  return Math.min(AUTO_ENTRY_DEFAULT, Math.max(MIN_AUTO_ENTRY, cap));
+}
 type AutoOr<T> = "auto" | T;
 
 interface ApiResponse {
@@ -218,8 +232,9 @@ export default function AutoPilotPage() {
     // explicit count it is exact.
     const autoCount = lineupCount === "auto";
     const requested = autoCount ? MAX_AUTO_LINEUPS : lineupCount;
-    const effEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
     const cap = maxSpend === "auto" ? null : maxSpend;
+    // Auto entry fits the cap (drops from $20 so a small cap still builds).
+    const effEntry = entry === "auto" ? autoEntryForCap(cap) : entry;
     const fitCount = cap != null ? Math.floor(cap / effEntry) : requested;
     const cantFit = cap != null && fitCount < 1;
     const finalCount = cap != null ? Math.max(0, Math.min(requested, fitCount)) : requested;
@@ -261,12 +276,14 @@ export default function AutoPilotPage() {
     };
     // Resolve entry + count, then apply the Max Spend cap by trimming the
     // lineup count so count × entry never exceeds it.
-    const baseEntry = entry === "auto" ? AUTO_ENTRY_DEFAULT : entry;
+    const cap = maxSpend === "auto" ? null : maxSpend;
+    // Auto entry fits the cap (drops from $20 so a small cap still builds one
+    // slip instead of blocking). An explicit entry is used as-is.
+    const baseEntry = entry === "auto" ? autoEntryForCap(cap) : entry;
     const isAutoCount = lineupCount === "auto";
     // When the user explicitly picked a count, fill to it (allow overlap on a
     // thin board). On Auto we never pad — fewer-but-distinct is the whole point.
     const fillToCount = !isAutoCount;
-    const cap = maxSpend === "auto" ? null : maxSpend;
     // Build ceiling: how many slips the optimizer may produce before the model
     // trims to the ones worth playing. On Auto that is up to MAX_AUTO_LINEUPS;
     // with an explicit count it is that count. Max Spend caps it either way so
@@ -600,7 +617,7 @@ export default function AutoPilotPage() {
             </div>
             {entry === "auto" && (
               <p className="text-white/55 text-xs mt-3">
-                Auto — ${AUTO_ENTRY_DEFAULT} per slip. Max Spend caps how many slips, not the per-slip size.
+                Auto — ${AUTO_ENTRY_DEFAULT} per slip, automatically lowered to fit your Max Spend cap.
               </p>
             )}
           </ControlCard>
@@ -646,8 +663,14 @@ export default function AutoPilotPage() {
                 <>Auto — no cap. You spend lineups × entry (${spend.plannedTotal} right now).</>
               ) : spend.cantFit ? (
                 <span className="text-[#F87171]">
-                  ${maxSpend} cap is below the ${spend.effEntry} per-slip entry — lower the entry
-                  or raise the cap.
+                  {entry === "auto" ? (
+                    <>${maxSpend} cap is below the ${MIN_AUTO_ENTRY} minimum per slip — raise the cap.</>
+                  ) : (
+                    <>
+                      ${maxSpend} cap is below the ${spend.effEntry} per-slip entry — lower the entry
+                      or raise the cap.
+                    </>
+                  )}
                 </span>
               ) : spend.trimmed ? (
                 <>
