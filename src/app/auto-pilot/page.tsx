@@ -64,8 +64,8 @@ const ODDS_PREFERENCES: {
  *   sport → ALL (no filter — auto = "we choose")
  */
 const AUTO_ENTRY_DEFAULT = 20;
-// PrizePicks-style minimum per-slip entry. Auto entry never goes below this.
-const MIN_AUTO_ENTRY = 5;
+// PrizePicks minimum per-slip entry ($1). Auto entry never goes below this.
+const MIN_AUTO_ENTRY = 1;
 // Ceiling the model may use when count is on Auto. It builds up to this many
 // distinct slips, then keeps only the ones genuinely worth playing (see
 // recommendLineupCount) — so Auto returns 1 when there is one standout and more
@@ -74,12 +74,12 @@ const MAX_AUTO_LINEUPS = 5;
 
 /**
  * Auto entry-cost. $20 per slip by default, but sized DOWN to fit `count` slips
- * under a Max Spend cap, between the $5 minimum and the $20 default. So asking
- * for 5 slips with a $50 cap lands $10 each (all 5 fit); a $10 cap drops to $5
- * each and fits 2; a $10 cap with 1 slip stays $10. This is what lets an
- * explicit slip count actually build more than one slip under a small cap,
- * instead of stranding the budget on a single $20 entry. Never below the $5
- * minimum — if the cap can't fit even one $5 slip the panel says so.
+ * under a Max Spend cap, between the $1 minimum and the $20 default. So asking
+ * for 5 slips with a $50 cap lands $10 each (all 5 fit); a $10 cap drops to $2
+ * each and all 5 still fit; a $10 cap with 1 slip stays $10. This is what lets
+ * an explicit slip count actually build that many slips under a small cap,
+ * instead of stranding the budget on a single $20 entry. Never below the $1
+ * minimum — if the cap can't fit even one $1 slip the panel says so.
  */
 function autoEntryForCap(cap: number | null, count: number): number {
   if (cap == null) return AUTO_ENTRY_DEFAULT;
