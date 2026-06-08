@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { summarizeClv, type RecordedPick } from "@/lib/clv";
 
 export const dynamic = "force-dynamic";
 
@@ -129,12 +130,18 @@ const GRADING_CRITERIA = [
 
 export async function GET() {
   const root = "data/training";
-  const [check, lastTrained, current, runHistory] = await Promise.all([
+  const [check, lastTrained, current, runHistory, clvLog] = await Promise.all([
     readJson<ModelCheck>(join(root, "meta", "modelCheck.json")),
     readJson<Record<string, string>>(join(root, "meta", "lastTrainedAt.json")),
     readJson<CurrentRun>(join(root, "meta", "currentRun.json")),
     readJson<RunHistoryEntry[]>(join(root, "meta", "runHistory.json")),
+    readJson<RecordedPick[]>(join(root, "meta", "clvLog.json")),
   ]);
+
+  // Closing-line value: the real-market validator. Empty until the pick ledger
+  // accrues closes, and that empty state is honest, not hidden. A beatRate
+  // persistently above 50% is the only trustworthy proof of edge.
+  const clv = summarizeClv(Array.isArray(clvLog) ? clvLog : []);
 
   const rows = check?.rows ?? [];
   const sports = await Promise.all(
@@ -244,6 +251,7 @@ export async function GET() {
       runHistoryCount: history.length,
       lastRun: lastRunSummary,
     },
+    clv,
     sports: sports.sort((a, b) => (b.accuracy ?? 0) - (a.accuracy ?? 0)),
     traits: TRAITS,
     projectionSignals: PROJECTION_SIGNALS,
