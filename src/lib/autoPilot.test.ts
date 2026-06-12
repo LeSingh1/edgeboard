@@ -105,3 +105,119 @@ describe("buildAutoLineups — push-safe filter (learned from a real losing slip
     );
   });
 });
+
+/**
+ * Regression tests for "Red demons mode returns goblin/standard slips".
+ *
+ * Real failure (WNBA, 2026-06-11): with a warm projection cache the pass-2
+ * rebuild pool mixes real-priced demons (pMore ≈ 0.23–0.38) with cached
+ * goblins/standards (pMore ≥ 0.55). Three things then conspired:
+ *   1. families whose demon variant wasn't in the pool silently substituted
+ *      their goblin/standard variant (bestVariant fell through to best-prob);
+ *   2. the relaxed demon floor (0.30) was tuned for the 0.40 implied
+ *      placeholder, so most REAL-priced demons were dropped;
+ *   3. the optimizer ranks lineups by hit probability, so the surviving mixed
+ *      pool always put goblin/standard slips first.
+ * Net: the user picked Red Demons and got goblin slips.
+ */
+describe("buildAutoLineups — explicit pick-style preference is binding", () => {
+  /** A family = demon + standard rungs; or goblin + standard. All .5 lines. */
+  const real: Record<string, import("./realProjections").ProjectionResult> = {};
+  const props: Prop[] = [];
+  const TEAMS = ["LVA", "NYL", "IND", "CHI", "SEA", "MIN", "PHX", "ATL"];
+  const addFamily = (
+    n: number,
+    player: string,
+    demonP: number | null,
+    goblinP: number | null,
+    standardP: number,
+  ) => {
+    // Spread families across teams — PrizePicks slips need >= 2 distinct teams.
+    const fam = {
+      playerName: player,
+      statType: "Points",
+      team: TEAMS[(n - 1) % TEAMS.length],
+      opponent: TEAMS[n % TEAMS.length],
+    };
+    if (demonP !== null) {
+      const id = `d${n}`;
+      props.push(mkProp({ ...fam, id, oddsType: "demon", line: 30.5, pMore: 0.4, pLess: 0.6 }));
+      real[id] = { available: true, pMore: demonP, pLess: 1 - demonP, projection: 25, sigma: 6, sampleSize: 20, recent: [], source: "test", modelVersion: "test-v1" };
+    }
+    if (goblinP !== null) {
+      const id = `g${n}`;
+      props.push(mkProp({ ...fam, id, oddsType: "goblin", line: 14.5, pMore: 0.588, pLess: 0.412 }));
+      real[id] = { available: true, pMore: goblinP, pLess: 1 - goblinP, projection: 25, sigma: 6, sampleSize: 20, recent: [], source: "test", modelVersion: "test-v1" };
+    }
+    const id = `s${n}`;
+    props.push(mkProp({ ...fam, id, oddsType: "standard", line: 22.5, pMore: standardP, pLess: 1 - standardP }));
+    real[id] = { available: true, pMore: standardP, pLess: 1 - standardP, projection: 25, sigma: 6, sampleSize: 20, recent: [], source: "test", modelVersion: "test-v1" };
+  };
+  // 4 families WITH demons, real-priced where demons actually price (0.22–0.34).
+  addFamily(1, "Demon A", 0.34, null, 0.56);
+  addFamily(2, "Demon B", 0.28, null, 0.58);
+  addFamily(3, "Demon C", 0.25, null, 0.6);
+  addFamily(4, "Demon D", 0.22, null, 0.55);
+  // 4 families WITHOUT demons — easy goblins that outrank any demon on hit prob.
+  addFamily(5, "Goblin A", null, 0.7, 0.55);
+  addFamily(6, "Goblin B", null, 0.68, 0.56);
+  addFamily(7, "Goblin C", null, 0.66, 0.57);
+  addFamily(8, "Goblin D", null, 0.64, 0.58);
+
+  it("demon preference builds DEMON slips even when easier picks share the pool", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, {
+      oddsPreference: "demon",
+      realProjections: real,
+    });
+    assert.ok(res.lineups.length > 0, "should still build slips from the demon material");
+    for (const l of res.lineups) {
+      for (const pk of l.picks) {
+        assert.equal(
+          pk.prop.oddsType,
+          "demon",
+          `Red Demons mode must only play demons, got ${pk.prop.oddsType} (${pk.prop.playerName})`,
+        );
+      }
+    }
+  });
+
+  it("demon preference keeps real-priced demons above ~0.2 (floor tuned for real model, not the 0.40 placeholder)", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, {
+      oddsPreference: "demon",
+      realProjections: real,
+    });
+    const ids = res.candidates.map((c) => c.id);
+    assert.ok(ids.includes("d2"), "0.28 demon must survive the floor");
+    assert.ok(ids.includes("d3"), "0.25 demon must survive the floor");
+  });
+
+  it("families without the wanted variant are skipped, not substituted", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, {
+      oddsPreference: "demon",
+      realProjections: real,
+    });
+    assert.ok(
+      res.candidates.every((c) => c.oddsType === "demon"),
+      `pool must be demon-only, got: ${res.candidates.map((c) => c.oddsType).join(",")}`,
+    );
+  });
+
+  it("standard preference means standard ONLY (the UI copy promises 'no goblins or demons')", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, {
+      oddsPreference: "standard",
+      realProjections: real,
+    });
+    assert.ok(res.lineups.length > 0);
+    for (const l of res.lineups)
+      for (const pk of l.picks) assert.equal(pk.prop.oddsType, "standard");
+  });
+
+  it("balanced preference still mixes freely (unchanged behavior)", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, {
+      realProjections: real,
+    });
+    assert.ok(res.lineups.length > 0);
+    const types = new Set(res.candidates.map((c) => c.oddsType));
+    assert.ok(types.size > 1, "balanced pool should contain more than one pick style");
+  });
+});

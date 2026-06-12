@@ -5,6 +5,7 @@ import { Trophy, Sparkles, ChevronDown, TrendingUp, TrendingDown, Zap, Layers } 
 import { useMemo, useState } from "react";
 import {
   recommendLineups,
+  enterablePick,
   type FilterOptions,
   type SizeRecommendation,
 } from "@/lib/optimizer";
@@ -493,7 +494,9 @@ function SuggestDetail({
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {best.picks.map((pick, i) => {
-              const isMore = pick.side === "more";
+              // MORE-only invariant: demon/goblin can't be entered on LESS.
+              const norm = enterablePick(pick.prop, pick.side, pick.probability);
+              const isMore = norm.side === "more";
               return (
                 <div
                   key={i}
@@ -533,9 +536,9 @@ function SuggestDetail({
                       <OddsBadge oddsType={pick.prop.oddsType} compact />
                     </div>
                     <div className="text-white/60 text-[10px] truncate">
-                      {pick.side === "more" ? "MORE" : "LESS"} {pick.prop.line}{" "}
+                      {isMore ? "MORE" : "LESS"} {pick.prop.line}{" "}
                       {pick.prop.statType}{" "}
-                      <span className="text-white/40">· {(pick.probability * 100).toFixed(0)}%</span>
+                      <span className="text-white/40">· {(norm.probability * 100).toFixed(0)}%</span>
                     </div>
                     <div
                       className="text-[9px] font-bold uppercase tracking-widest mt-0.5"

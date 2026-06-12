@@ -22,6 +22,7 @@ export const wnbaAdapter: SportAdapter = {
     "WNBAPTS", "WNBAAST", "WNBA3PT",
   ],
   displayName: "WNBA",
+  hasLiveProjection: true, // fast ESPN search + gamelog
   trainingSeasons,
   supportedStats: SUPPORTED_STATS,
   fetchPlayerRoster,

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { combinations, oddsPayoutFactor, optimize } from "./optimizer";
+import { combinations, oddsPayoutFactor, optimize, enterablePick } from "./optimizer";
 import type { Prop } from "./types";
 
 /** Minimal valid Prop; override per case. */
@@ -159,5 +159,49 @@ describe("probProfit — honest 'chance you actually profit'", () => {
     assert.ok(Math.abs(flex!.hitProbability - 0.648) < 1e-6, `hit ${flex!.hitProbability}`);
     assert.ok(Math.abs((flex!.probProfit ?? -1) - 0.216) < 1e-6, `probProfit ${flex!.probProfit}`);
     assert.ok(flex!.probProfit! < flex!.hitProbability, "profit prob must be below cash prob");
+  });
+});
+
+describe("enterablePick — MORE-only invariant for demon/goblin", () => {
+  it("flips a stale demon LESS to MORE and uses pMore (the real, low prob)", () => {
+    const demon = mkProp({ oddsType: "demon", pMore: 0.05, pLess: 0.95 });
+    const r = enterablePick(demon, "less", 0.95);
+    assert.equal(r.side, "more", "demon must normalize to MORE");
+    assert.equal(r.repriced, true, "must flag the flip");
+    assert.ok(Math.abs(r.probability - 0.05) < 1e-9, `expected pMore 0.05, got ${r.probability}`);
+  });
+
+  it("flips a stale goblin LESS to MORE", () => {
+    const goblin = mkProp({ oddsType: "goblin", pMore: 0.62, pLess: 0.38 });
+    const r = enterablePick(goblin, "less", 0.38);
+    assert.equal(r.side, "more");
+    assert.equal(r.repriced, true);
+    assert.ok(Math.abs(r.probability - 0.62) < 1e-9);
+  });
+
+  it("leaves a demon already on MORE untouched", () => {
+    const demon = mkProp({ oddsType: "demon", pMore: 0.4, pLess: 0.6 });
+    const r = enterablePick(demon, "more", 0.4);
+    assert.equal(r.side, "more");
+    assert.equal(r.repriced, false);
+    assert.equal(r.probability, 0.4);
+  });
+
+  it("passes standard picks through on EITHER side (both are enterable)", () => {
+    const std = mkProp({ oddsType: "standard", pMore: 0.45, pLess: 0.55 });
+    const less = enterablePick(std, "less", 0.55);
+    assert.equal(less.side, "less");
+    assert.equal(less.repriced, false);
+    assert.equal(less.probability, 0.55);
+    const more = enterablePick(std, "more", 0.45);
+    assert.equal(more.side, "more");
+    assert.equal(more.repriced, false);
+  });
+
+  it("falls back to 1 - storedProb when pMore is missing", () => {
+    const demon = mkProp({ oddsType: "demon", pMore: NaN, pLess: 0.9 });
+    const r = enterablePick(demon, "less", 0.9);
+    assert.equal(r.side, "more");
+    assert.ok(Math.abs(r.probability - 0.1) < 1e-9, `expected 0.1 fallback, got ${r.probability}`);
   });
 });

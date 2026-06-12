@@ -16,6 +16,7 @@ export const nbaAdapter: SportAdapter = {
     "NBAPTS", "NBAAST", "NBA3PT",
   ],
   displayName: "NBA",
+  hasLiveProjection: true, // fast ESPN search + gamelog
   trainingSeasons: () => {
     // Past 10 seasons: pull each current player's full decade of game logs.
     const y = new Date().getFullYear();

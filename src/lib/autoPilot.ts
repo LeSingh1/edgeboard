@@ -24,6 +24,7 @@
 
 import { groupByFamily, familyKeyOf, type VariantSet } from "@/lib/variantGroups";
 import { optimize } from "@/lib/optimizer";
+import { isLiveProjectionLeague } from "@/lib/projectionCoverage";
 import type { Lineup, PickSide, Prop } from "@/lib/types";
 import type { ProjectionResult } from "@/lib/realProjections";
 
@@ -87,6 +88,12 @@ export interface AutoPilotOptions {
    *  ones. Use when the user explicitly asks for "consistent / safe / steady
    *  players only". */
   consistentOnly?: boolean;
+  /** Require a REAL projection model behind every pick (default true). Props from
+   *  leagues with no inlined model (World Cup, Badminton, CS2, …) and covered-
+   *  league props the model couldn't price (player/stat missing → real projection
+   *  came back `available:false`) are excluded, so a slip can never be built on the
+   *  flat PrizePicks-implied placeholder. Set false only for tests/diagnostics. */
+  requireRealModel?: boolean;
 }
 
 export interface AutoPilotResult {
@@ -113,10 +120,37 @@ function poolCapFor(lineupSize: number): number {
   return 14; // 6-pick
 }
 
+/** Standard-normal CDF (Abramowitz-Stegun) — re-prices a flash-sale prop at its
+ *  discounted line from the model's mean/sigma. */
+function normCdf(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-(z * z) / 2);
+  const p = 1 - d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z >= 0 ? p : 1 - p;
+}
+
+/** The line a pick is actually BET at — the flash-sale discounted line when one
+ *  is active, otherwise the standard line. */
+export function effectiveLine(p: Prop): number {
+  return p.flashSaleLine != null && p.flashSaleLine !== p.line ? p.flashSaleLine : p.line;
+}
+
 /** Patch implied probabilities with a real projection when one exists. */
 function withRealProb(p: Prop, real?: Record<string, ProjectionResult>): Prop {
   const r = real?.[p.id];
   if (r && r.available) {
+    // Flash sale: PrizePicks discounted the line in your favor. Price the pick
+    // at the DISCOUNTED line (what you'd actually bet) by re-deriving the hit
+    // probability from the model's mean/sigma at that easier line. The resulting
+    // higher pMore makes the discounted pick naturally rank above full-price
+    // peers — a real edge, so it's favored on merit, not a thumb on the scale.
+    if (p.flashSaleLine != null && p.flashSaleLine !== p.line && r.sigma > 0) {
+      const pMore = Math.max(0.02, Math.min(0.98, 1 - normCdf((p.flashSaleLine - r.projection) / r.sigma)));
+      const round = (x: number) => Math.round(x * 1000) / 1000;
+      // Keep `line` as the original so the UI can show "was 30.5"; the bet line
+      // is read via effectiveLine(). pMore/pLess reflect the discounted line.
+      return { ...p, pMore: round(pMore), pLess: round(1 - pMore), modelVersion: r.modelVersion };
+    }
     return { ...p, pMore: r.pMore, pLess: r.pLess, modelVersion: r.modelVersion };
   }
   return p;
@@ -147,13 +181,17 @@ function bestVariant(
         : { prop: p, side: "less", prob: p.pLess };
   };
 
-  // Honor an explicit pick-style preference: if this family offers the wanted
-  // variant, take it even when its raw probability is lower — that lower hit
-  // rate (and bigger payout, for demons) is exactly the tradeoff the user
-  // opted into. Families without the wanted variant fall through to best-prob.
+  // An explicit pick-style preference is BINDING: take the wanted variant even
+  // when its raw probability is lower — that lower hit rate (and bigger payout,
+  // for demons) is exactly the tradeoff the user opted into. Families without
+  // the wanted variant are SKIPPED, not substituted: a fallthrough to the
+  // family's goblin/standard rung quietly refills the pool with easier picks,
+  // and since the optimizer ranks slips by hit probability those substitutes
+  // always outrank the real demons — "Red demons" mode then returns goblin
+  // slips (observed on the 2026-06-11 WNBA board with a warm projection cache).
   if (preference !== "balanced") {
     const want = all.find((p) => p.oddsType === preference);
-    if (want) return resolve(want);
+    return want ? resolve(want) : null;
   }
 
   // Compare variants by push-adjusted probability so a clean .5 line beats a
@@ -356,7 +394,7 @@ function consistencyFactor(clear: number | undefined): number {
  * lines — this penalty corrects for both at the selection layer.)
  */
 function pushPenalty(prop: Prop): number {
-  return Number.isInteger(prop.line) ? 0.72 : 1;
+  return Number.isInteger(effectiveLine(prop)) ? 0.72 : 1;
 }
 
 function autoScore(
@@ -409,6 +447,8 @@ export function buildAutoLineups(
   const consistentOnly = options.consistentOnly ?? false;
   // Hard consistent-only mode implies consistency weighting and a clear-rate bar.
   const favorConsistency = (options.favorConsistency ?? false) || consistentOnly;
+  // No-mock-data gate (default ON): only real-model-priced props can become picks.
+  const requireRealModel = options.requireRealModel ?? true;
   const MIN_CLEAR = 0.6; // must have cleared the line in >= 60% of recent games
   const families = groupByFamily(allProps);
 
@@ -417,6 +457,9 @@ export function buildAutoLineups(
 
   for (const p of allProps) {
     if (options.sport && options.sport !== "ALL" && p.sport !== options.sport) continue;
+    // No-mock gate: a league with no inlined projection model only ever carries
+    // the flat PrizePicks-implied placeholder, so it can never be a real pick.
+    if (requireRealModel && !isLiveProjectionLeague(p.sport)) continue;
     if ((options.excludeLive ?? true) && p.isLive) continue;
     if ((options.excludeCombo ?? true) && p.isCombo) continue;
     // Team allowlist (e.g. "alive playoff teams only"). Empty set = no filter.
@@ -434,6 +477,13 @@ export function buildAutoLineups(
     const best = bestVariant(vs, real, preference);
     if (!best) continue;
 
+    // No-mock gate (per-prop): once a real projection has been fetched for this
+    // prop and it came back unavailable (player/stat the model can't price), drop
+    // it — its pMore/pLess are the implied placeholder, not a prediction. Props
+    // not yet fetched are kept for pass-1 exploration; the page guarantees the
+    // FINAL build only sees props whose real projection is available.
+    if (requireRealModel && real?.[best.prop.id]?.available === false) continue;
+
     // Push-safe filter (learned from a real losing slip). A WHOLE-NUMBER line
     // can land exactly on the number and PUSH: Power voids the leg, Flex drops
     // it to the lower payout tier. autoScore only down-weights integer lines
@@ -444,16 +494,21 @@ export function buildAutoLineups(
     // avoidable loss paths, so here we EXCLUDE integer lines outright rather
     // than merely ranking them lower. Balanced/aggressive builds keep the
     // softer down-weight so a strong whole-number pick can still surface.
-    if ((favorConsistency || consistentOnly) && Number.isInteger(best.prop.line)) continue;
+    if ((favorConsistency || consistentOnly) && Number.isInteger(effectiveLine(best.prop))) continue;
 
     // Probability floor. Demons are intentionally < 50% to hit, so a demon
     // preference would be filtered to nothing under the default 0.50 floor —
     // relax it for picks that match the preferred style the user opted into.
+    // The demon floor must clear REAL model pricing, not just the implied
+    // placeholder: implied demons sit at 0.40, but the calibrated model prices
+    // typical board demons at ~0.22–0.38, so a 0.30 floor silently dropped most
+    // demons on the pass-2 (real-backed) rebuild. 0.20 keeps the normal range
+    // and still culls the hopeless tail.
     // Consistent-only raises the floor so coinflip picks never make the pool.
     const baseMin = Math.max(options.minProbability ?? 0.5, consistentOnly ? 0.62 : 0);
     const minProb =
       preference !== "balanced" && best.prop.oddsType === preference
-        ? Math.min(baseMin, preference === "demon" ? 0.3 : 0.45)
+        ? Math.min(baseMin, preference === "demon" ? 0.2 : 0.45)
         : baseMin;
     if (best.prob < minProb) continue;
 
@@ -464,7 +519,7 @@ export function buildAutoLineups(
     const rp = real?.[best.prop.id];
     let clear: number | undefined;
     if (rp && rp.available && Array.isArray(rp.recent) && rp.recent.length >= 3) {
-      const line = best.prop.line;
+      const line = effectiveLine(best.prop);
       const hits = rp.recent.filter((v) =>
         best.side === "more" ? v > line : v < line,
       ).length;
@@ -531,6 +586,13 @@ export function buildAutoLineups(
     entryCost,
     riskMode: "safe",
     maxResults: Math.max(lineupCount * 6, 60),
+    // buildAutoLineups owns its own no-mock gate (league filter + the per-prop
+    // real-availability check above), and uses a two-pass flow where pass-1
+    // EXPLORES with still-implied props before pass-2 rebuilds from backed-only
+    // props. optimize()'s modelVersion gate would wrongly drop those pass-1
+    // exploration props (the board is implied-v1 until projections are fetched),
+    // so it's disabled here. It stays ON for direct/manual optimize() callers.
+    requireRealModel: false,
   });
 
   const picked = (options.diversify ?? true)

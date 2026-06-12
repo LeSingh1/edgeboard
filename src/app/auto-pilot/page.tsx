@@ -24,7 +24,9 @@ import {
   Scale,
 } from "lucide-react";
 import type { OddsPreference } from "@/lib/autoPilot";
-import { buildAutoLineups, pickAutoSize, recommendLineupCount, type AutoPilotResult } from "@/lib/autoPilot";
+import { buildAutoLineups, pickAutoSize, recommendLineupCount, effectiveLine, type AutoPilotResult } from "@/lib/autoPilot";
+import { enterablePick } from "@/lib/optimizer";
+import { isLiveProjectionLeague } from "@/lib/projectionCoverage";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -336,15 +338,38 @@ export default function AutoPilotPage() {
       try {
         await Promise.all([...distinct.values()].map((p) => fetchProjection(p)));
         const fresh = useProjectionStore.getState().byProp;
-        finalResult = buildAutoLineups(
-          board.props,
-          resolved.lineupSize,
-          resolved.lineupCount,
-          resolved.entry,
-          { sport: resolved.sport, realProjections: fresh, teamAllowlist: allowlist, oddsPreference, fillToCount, favorConsistency },
-        );
+        // No-mock guarantee: rebuild only from props whose REAL projection came
+        // back available. Anything the model couldn't price (player/stat missing)
+        // would otherwise re-enter on its implied placeholder — drop it here so
+        // the final slip is 100% real-model-backed.
+        const backedProps = board.props.filter((p) => fresh[p.id]?.available === true);
+        const buildAt = (size: number) =>
+          buildAutoLineups(backedProps, size, resolved.lineupCount, resolved.entry, {
+            sport: resolved.sport,
+            realProjections: fresh,
+            teamAllowlist: allowlist,
+            oddsPreference,
+            fillToCount,
+            favorConsistency,
+          });
+        finalResult = buildAt(resolved.lineupSize);
+        // The no-mock gate shrinks the pool to real-backed props, so the size
+        // pickAutoSize chose on the full (implied) board may be too big to form a
+        // valid slip. On Auto, sweep down to the largest size that actually fills.
+        if (finalResult.lineups.length === 0 && lineupSize === "auto") {
+          for (let s = resolved.lineupSize - 1; s >= 2; s--) {
+            const alt = buildAt(s);
+            if (alt.lineups.length > 0) {
+              finalResult = alt;
+              resolved.lineupSize = s;
+              break;
+            }
+          }
+        }
       } catch {
-        /* keep the implied-priced result if warming fails */
+        // Real pricing failed — do NOT fall back to the implied (mock) pass-1
+        // slip. Show no picks rather than a placeholder-priced one.
+        finalResult = { ...r, lineups: [] };
       } finally {
         setPricingPicks(false);
       }
@@ -1030,9 +1055,9 @@ export default function AutoPilotPage() {
                 One thing
               </strong>
               No bet is guaranteed — PrizePicks tunes their lines so house edge holds in the long
-              run. We&apos;re showing the lineups with the highest chance to hit given the data we have
-              (real game-log projections when cached, PrizePicks-implied otherwise). Visit the
-              Live Board first to seed real Edge data for the leagues you want stronger picks in.
+              run. Every pick here is priced by a real game-log projection model (NBA, WNBA, and
+              MLB today) — leagues without a model are never built into a slip, so you&apos;ll never
+              see a PrizePicks-implied coinflip dressed up as an edge.
             </div>
           </motion.section>
         )}
@@ -1253,7 +1278,12 @@ function LineupCard({
           toggle that drops into the bench). */}
       <ul className="grid gap-2 p-5">
         {lineup.picks.map((p, i) => {
-          const isMore = p.side === "more";
+          // MORE-only invariant: demon/goblin rungs can't be entered on LESS.
+          // Normalize a stale LESS pick (rung repriced since it was built) to
+          // its enterable side + true probability so the card never shows an
+          // unplayable "LESS 95%" as if it were a lock.
+          const { side, probability, repriced } = enterablePick(p.prop, p.side, p.probability);
+          const isMore = side === "more";
           const sideColor = isMore ? "#4ADE80" : "#F87171";
           const SideIcon = isMore ? TrendingUp : TrendingDown;
           return (
@@ -1288,7 +1318,7 @@ function LineupCard({
                 <div className="text-white/55 text-[10px] md:text-[11px] uppercase tracking-widest font-bold flex items-center gap-1 md:gap-1.5 flex-wrap mt-0.5">
                   <span>{p.prop.statType}</span>
                   <span>·</span>
-                  <span className="text-white/75">{isMore ? "More" : "Less"} {p.prop.line}</span>
+                  <span className="text-white/75">{isMore ? "More" : "Less"} {effectiveLine(p.prop)}</span>
                   <span className="hidden md:inline">·</span>
                   <span className="hidden md:inline">{p.prop.sport}</span>
                   {p.prop.oddsType !== "standard" && (
@@ -1296,6 +1326,23 @@ function LineupCard({
                       <span>·</span>
                       <OddsBadge oddsType={p.prop.oddsType} compact />
                     </>
+                  )}
+                  {p.prop.flashSaleLine != null && p.prop.flashSaleLine !== p.prop.line && (
+                    <span
+                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[#FFE600] bg-[#FFE600]/15 border border-[#FFE600]/40 normal-case tracking-normal"
+                      title={`Flash sale — line discounted from ${p.prop.line} to ${p.prop.flashSaleLine} in your favor`}
+                    >
+                      <Zap size={9} strokeWidth={3} />
+                      -{Math.round((1 - p.prop.flashSaleLine / p.prop.line) * 100)}%
+                    </span>
+                  )}
+                  {repriced && (
+                    <span
+                      className="text-[#F87171] normal-case tracking-normal"
+                      title="This rung is now a demon/goblin — MORE only. The line moved since this pick was built; re-check before entering."
+                    >
+                      · line moved — MORE only
+                    </span>
                   )}
                 </div>
               </div>
@@ -1311,7 +1358,7 @@ function LineupCard({
                   className="font-[family-name:var(--font-display)] text-lg w-12 text-right"
                   style={{ color: sideColor }}
                 >
-                  {(p.probability * 100).toFixed(0)}%
+                  {(probability * 100).toFixed(0)}%
                 </span>
               </div>
             </li>
@@ -1351,10 +1398,13 @@ function CopyPicksButton({
 
   const formatted = (() => {
     const pickLines = lineup.picks.map((p, i) => {
-      const side = p.side === "more" ? "MORE" : "LESS";
+      // Normalize to the enterable side so the pasted slip matches PrizePicks.
+      const norm = enterablePick(p.prop, p.side, p.probability);
+      const side = norm.side === "more" ? "MORE" : "LESS";
       const oddsTag = p.prop.oddsType !== "standard" ? ` (${p.prop.oddsType.toUpperCase()})` : "";
-      const pct = `${(p.probability * 100).toFixed(0)}%`;
-      return `${i + 1}. ${p.prop.playerName} — ${p.prop.statType} ${side} ${p.prop.line}${oddsTag} · ${pct}`;
+      const pct = `${(norm.probability * 100).toFixed(0)}%`;
+      const flashTag = p.prop.flashSaleLine != null && p.prop.flashSaleLine !== p.prop.line ? " ⚡FLASH" : "";
+      return `${i + 1}. ${p.prop.playerName} — ${p.prop.statType} ${side} ${effectiveLine(p.prop)}${oddsTag}${flashTag} · ${pct}`;
     });
     const sizeLabel = `${lineup.picks.length}-pick ${lineup.playType === "power" ? "Power" : "Flex"}`;
     const hit = `${((lineup.probProfit ?? lineup.hitProbability) * 100).toFixed(1)}% profit chance`;
@@ -1509,12 +1559,23 @@ function EmptyResult({
     >
       <Zap size={36} className="text-[#F87171] mx-auto" strokeWidth={3} />
       <h3 className="font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-lg text-white mt-3">
-        No lineups available
+        No model-backed lineups
       </h3>
       <p className="text-white/65 text-sm mt-2 max-w-md mx-auto">
-        Pool of {pool} {sport === "ALL" ? "" : `${sport} `}props can&apos;t form a {lineupSize}-pick
-        slip with two different teams. Try a different sport, a smaller lineup size, or wait
-        for more games to come on the board.
+        {isLiveProjectionLeague(sport) || sport === "ALL" ? (
+          <>
+            Couldn&apos;t build a {lineupSize}-pick slip from {pool} real-model-priced{" "}
+            {sport === "ALL" ? "" : `${sport} `}props (needs two different teams). Try a
+            smaller lineup size or wait for more games on the board.
+          </>
+        ) : (
+          <>
+            <span className="text-[#F87171] font-bold">{sport}</span> has no real projection
+            model — every line there is just the PrizePicks-implied coinflip, so Auto-Pilot
+            won&apos;t build mock picks from it. Pick a covered league:{" "}
+            <span className="text-[#4ADE80] font-bold">NBA, WNBA, or MLB</span>.
+          </>
+        )}
       </p>
     </motion.div>
   );

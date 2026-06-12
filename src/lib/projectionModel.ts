@@ -27,6 +27,18 @@ const IMPLIED_MORE: Record<OddsType, number> = {
   goblin:   0.588,  // easier line → MORE more likely
 };
 
+/** Sentinel modelVersion for the flat PrizePicks-implied placeholder. A prop
+ *  carrying this has NO real projection behind it — its pMore/pLess are derived
+ *  purely from the odds_type, not from any game data. Treat it as mock. */
+export const IMPLIED_MODEL_VERSION = "implied-v1";
+
+/** True iff a real game-log projection priced this prop (any modelVersion other
+ *  than the implied placeholder). The one check every pick/edge surface uses to
+ *  decide whether a probability is real or mock. */
+export function hasRealModel(modelVersion?: string | null): boolean {
+  return !!modelVersion && modelVersion !== IMPLIED_MODEL_VERSION;
+}
+
 export function impliedProbability(oddsType: OddsType): {
   pMore: number;
   pLess: number;
@@ -36,7 +48,7 @@ export function impliedProbability(oddsType: OddsType): {
   return {
     pMore: round3(pMore),
     pLess: round3(1 - pMore),
-    modelVersion: "implied-v1",
+    modelVersion: IMPLIED_MODEL_VERSION,
   };
 }
 

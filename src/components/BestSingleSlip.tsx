@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, ArrowRight, TrendingUp, TrendingDown, Trophy, Target, Zap, Layers } from "lucide-react";
-import { recommendLineups, meetsTeamDiversity } from "@/lib/optimizer";
+import { recommendLineups, meetsTeamDiversity, enterablePick } from "@/lib/optimizer";
 import { useLineupStore } from "@/stores/lineupStore";
 import type { PlayType, Prop, RiskMode } from "@/lib/types";
 import type { VariantSet } from "@/lib/variantGroups";
@@ -344,7 +344,9 @@ export function BestSingleSlip({
         <ul className="grid gap-2.5">
           <AnimatePresence initial={false}>
             {best.picks.map((p, i) => {
-              const isMore = p.side === "more";
+              // MORE-only invariant: demon/goblin can't be entered on LESS.
+              const norm = enterablePick(p.prop, p.side, p.probability);
+              const isMore = norm.side === "more";
               const sideColor = isMore ? "#4ADE80" : "#F87171";
               const sideLabel = isMore ? "More" : "Less";
               const sideIcon = isMore ? TrendingUp : TrendingDown;
@@ -399,7 +401,7 @@ export function BestSingleSlip({
                       className="font-[family-name:var(--font-display)] text-lg w-12 text-right"
                       style={{ color: sideColor }}
                     >
-                      {(p.probability * 100).toFixed(0)}%
+                      {(norm.probability * 100).toFixed(0)}%
                     </span>
                   </div>
                 </motion.li>

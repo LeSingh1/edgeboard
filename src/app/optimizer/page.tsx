@@ -25,6 +25,7 @@ import { useLineupStore } from "@/stores/lineupStore";
 import { useProjectionStore } from "@/stores/projectionStore";
 import { useIntelStore } from "@/stores/intelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { hasRealModel } from "@/lib/projectionModel";
 import {
   optimize,
   POWER_MULTIPLIERS,
@@ -174,6 +175,13 @@ export default function OptimizerPage() {
         return p.side === "more" ? patched.pMore : patched.pLess;
       }),
     [picks, selectedProps],
+  );
+  // The slip hit % is only real if EVERY pick is real-model-priced. If any pick
+  // is still on the implied placeholder, the product mixes in a coinflip — that
+  // number would be mock, so we suppress it rather than show a fake confidence.
+  const allBacked = useMemo(
+    () => N > 0 && selectedProps.every((p) => hasRealModel(p.modelVersion)),
+    [selectedProps, N],
   );
   const slipHitProb = useMemo(() => {
     if (N === 0) return 0;
@@ -363,8 +371,10 @@ export default function OptimizerPage() {
                   const accent = accentHexFor(i);
                   const accent2 = accentHexFor(i + 2);
                   const isMore = pick.side === "more";
-                  // Use real-projection-patched probability if available, fall back to implied
+                  // Only a real-model-priced pick gets a % shown — the implied
+                  // placeholder (0.5/0.4/0.588) is mock and must never display.
                   const patched = selectedProps[i] ?? pick.prop;
+                  const backed = hasRealModel(patched.modelVersion);
                   const pMore = patched.pMore * 100;
                   const pLess = patched.pLess * 100;
                   // Narrow projection result so we can pull adjustments + baseline for MatchupIntel
@@ -452,7 +462,7 @@ export default function OptimizerPage() {
                             <TrendingUp size={11} strokeWidth={3} />
                             More
                           </div>
-                          <span className="text-[9px] opacity-80">{pMore.toFixed(0)}%</span>
+                          <span className="text-[9px] opacity-80">{backed ? `${pMore.toFixed(0)}%` : "—"}</span>
                         </button>
                         {pick.prop.oddsType === "standard" ? (
                           <button
@@ -468,7 +478,7 @@ export default function OptimizerPage() {
                               <TrendingDown size={11} strokeWidth={3} />
                               Less
                             </div>
-                            <span className="text-[9px] opacity-80">{pLess.toFixed(0)}%</span>
+                            <span className="text-[9px] opacity-80">{backed ? `${pLess.toFixed(0)}%` : "—"}</span>
                           </button>
                         ) : (
                           <span
@@ -521,11 +531,13 @@ export default function OptimizerPage() {
                 textShadow: `2px 2px 0 #7B2FFF, 4px 4px 0 #FF3AF2`,
               }}
             >
-              <AnimatedPercent value={slipHitProb} decimals={1} />
+              {allBacked ? <AnimatedPercent value={slipHitProb} decimals={1} /> : "—"}
             </motion.div>
 
             <div className="mt-4 text-white/70 text-sm">
-              if all {N} picks land — Power Play mode
+              {allBacked
+                ? `if all ${N} picks land — Power Play mode`
+                : "add real-model-priced picks (NBA · WNBA · MLB) to see a hit %"}
             </div>
 
             {/* Flex equivalent — same picks, but pays partial. For 6-picks
@@ -545,7 +557,7 @@ export default function OptimizerPage() {
                   {N >= 6 ? "4-of-6+" : N === 5 ? "3-of-5+" : N === 4 ? "3-of-4+" : "2-of-3+"} hits
                 </span>
                 <span className="ml-3 font-[family-name:var(--font-display)] text-base text-[#4ADE80]">
-                  {(flexHitProb * 100).toFixed(1)}%
+                  {allBacked ? `${(flexHitProb * 100).toFixed(1)}%` : "—"}
                 </span>
               </div>
             )}

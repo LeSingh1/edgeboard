@@ -27,6 +27,7 @@ import { useProjectionStore } from "@/stores/projectionStore";
 import { useLineupStore } from "@/stores/lineupStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { POWER_MULTIPLIERS, FLEX_PAYOUT_TABLES, ODDS_FACTOR } from "@/lib/optimizer";
+import { LIVE_PROJECTION_BASE_LEAGUES } from "@/lib/projectionCoverage";
 import type { ProjectionResult } from "@/lib/realProjections";
 import type { Lineup, Prop } from "@/lib/types";
 
@@ -177,28 +178,28 @@ function parseConsistentOnly(message: string): boolean {
  *  PrizePicks colors too ("red"/"green") only when paired with the pick word. */
 function parseOddsPreference(message: string): OddsPreference | null {
   const m = message.toLowerCase();
-  const mentionsDemon = /\b(demons?|red\s+demons?|devils?)\b/.test(m);
-  const mentionsGoblin = /\b(goblins?|green\s+goblins?)\b/.test(m);
-  // A negation word anywhere in the message flips a mention from a request into
-  // an exclusion — so "no goblins or demons" must NOT read as "demon".
-  const hasNegation = /\b(no|not|without|avoid|skip|exclude|don'?t|neither|none)\b/.test(m);
 
   // Explicit "standard / regular / plain" request → standard lines only.
   if (/\b(standard|regular|plain|normal|vanilla)\b/.test(m)) return "standard";
 
-  if (hasNegation) {
-    // "no goblins or demons" (both excluded) → standard.
-    if (mentionsDemon && mentionsGoblin) return "standard";
-    // Only one type excluded → lean to the other (the user ruled one out).
-    if (mentionsDemon) return "goblin";
-    if (mentionsGoblin) return "demon";
-    if (/no\s+preference/.test(m)) return "balanced";
-    return null;
-  }
+  const mentionsGoblin = /\bgoblins?\b/.test(m);
+  const mentionsDemon = /\b(demons?|devils?)\b/.test(m);
+  // Exclusion only when the negation word sits IMMEDIATELY before the type word
+  // (one optional color/quantifier in between). This is the fix for "no
+  // overlapping all green goblins" — the "no" belongs to "overlapping", not
+  // "goblins", so we must NOT treat the goblin mention as an exclusion.
+  const NEG = "(?:no|not|without|avoid|skip|exclude|don'?t|neither)";
+  const excludeGoblin = new RegExp(`\\b${NEG}\\b\\s+(?:any |more |the |green |red )?goblins?\\b`).test(m);
+  const excludeDemon = new RegExp(`\\b${NEG}\\b\\s+(?:any |more |the |green |red )?demons?\\b`).test(m);
+  const wantGoblin = mentionsGoblin && !excludeGoblin;
+  const wantDemon = mentionsDemon && !excludeDemon;
 
-  // No negation → a mention is a positive request.
-  if (mentionsDemon) return "demon";
-  if (mentionsGoblin) return "goblin";
+  if (excludeGoblin && excludeDemon) return "standard"; // "no goblins or demons"
+  if (wantGoblin && !wantDemon) return "goblin";
+  if (wantDemon && !wantGoblin) return "demon";
+  // Exactly one type ruled out → lean to the other.
+  if (excludeGoblin) return "demon";
+  if (excludeDemon) return "goblin";
   if (/\bbalanced\b|\bmix(?:ed)?\b/.test(m)) return "balanced";
   return null;
 }
@@ -416,6 +417,7 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
   // Saved pick-style preference — used as the default when the message itself
   // doesn't name a style. An inline "give me demons" still overrides it.
   const oddsPreference = useSettingsStore((s) => s.oddsPreference);
+  const anthropicKey = useSettingsStore((s) => s.anthropicKey);
   const router = useRouter();
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -453,12 +455,47 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
     setInput("");
     setThinking(true);
 
-    // Optimizer is fast (<200ms) but we yield to next tick so the user
-    // sees the "thinking" indicator. Avoids the response feeling robotic.
-    setTimeout(async () => {
+    // Prior turns (before this message) give the LLM conversational memory, so
+    // "2 per lineup" lands on top of an earlier "10 lineups, all goblins".
+    const priorTurns = messages.map((m) => ({ role: m.role, text: m.text }));
+
+    void (async () => {
+      // 1. Parse the request with the LLM (real NLU). Falls back to the local
+      //    regex parser if there's no API key or the call fails — the chat
+      //    always responds, just less flexibly without a key.
+      let parsed: ParsedIntent;
+      try {
+        const res = await fetch("/api/autopilot-chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            history: priorTurns,
+            anthropicKey: anthropicKey || undefined,
+            sports: [...LIVE_PROJECTION_BASE_LEAGUES],
+            propsAvailable: board.props.length,
+          }),
+        });
+        if (!res.ok) throw new Error(`chat-route ${res.status}`);
+        const j = await res.json();
+        parsed = normalizeIntent(j.intent, oddsPreference);
+      } catch {
+        // No LLM (no API key / offline): give the regex fallback a little memory
+        // by parsing the last few user turns together, so a follow-up like "$10"
+        // still inherits an earlier "10 lineups, 2 picks, goblins, no overlap".
+        const recentUserText = [
+          ...priorTurns.filter((t) => t.role === "user").slice(-3).map((t) => t.text),
+          text,
+        ].join(". ");
+        parsed = parseIntentLocally(recentUserText, oddsPreference);
+      }
+
+      // 2. Build the plan deterministically from the parsed intent. The model
+      //    only interpreted the request; buildAutoLineups (+ the no-mock gate)
+      //    produces every real pick.
       let reply: Message;
       try {
-        reply = respond(text, board.props, projections, oddsPreference);
+        reply = respond(parsed, board.props, projections);
       } catch (err) {
         setMessages((prev) => [
           ...prev,
@@ -485,13 +522,17 @@ export function AutoPilotChat({ board }: AutoPilotChatProps) {
         if (picks.size > 0) {
           await Promise.all([...picks.values()].map((p) => fetchProjection(p)));
           const fresh = useProjectionStore.getState().byProp;
-          const upgraded = respond(text, board.props, fresh, oddsPreference);
+          // No-mock: rebuild only from props whose REAL projection is available,
+          // so the upgraded plan can't fall back to PrizePicks-implied pricing.
+          const backed = board.props.filter((p) => fresh[p.id]?.available === true);
+          const upgraded = respond(parsed, backed, fresh);
           setMessages((prev) => prev.map((m) => (m.id === reply.id ? { ...upgraded, id: reply.id } : m)));
         }
       } catch {
-        /* keep the first (implied) reply if warming fails */
+        /* real pricing failed — leave the league-filtered reply; it carries no
+           uncovered-sport picks, only covered-league props the optimizer ranked */
       }
-    }, 320);
+    })();
   };
 
   if (!board || propsAvailable === 0) {
@@ -722,20 +763,92 @@ function PlanCard({
  * Convert the user's free-form message into an assistant reply with an
  * attached plan. All numbers in the reply derive from the optimizer.
  */
+/** The structured request the chat builds a plan from. Produced either by the
+ *  LLM intent parser (/api/autopilot-chat) or, as a fallback, by the local
+ *  regexes below. Decoupling parsing from building lets the model understand
+ *  free-form phrasing while the deterministic optimizer (and the no-mock gate)
+ *  still produces every real pick. */
+export interface ParsedIntent {
+  budget: number | null;
+  intent: Intent;
+  sport: string | null;
+  preference: OddsPreference;
+  consistentOnly: boolean;
+  requestedCount: number | null;
+  requestedSize: number | null;
+  noOverlap: boolean;
+  /** Optional LLM-written confirmation; unused when building (respond writes its
+   *  own specific text), but available for future conversational polish. */
+  reply: string | null;
+  /** When the budget/info is missing, the question to ask instead of building. */
+  clarifyingQuestion: string | null;
+}
+
+/** Fallback intent parser — the original regexes, used when the LLM route is
+ *  unavailable (no API key, offline). Keeps the chat working without a key. */
+function parseIntentLocally(message: string, savedPreference: OddsPreference): ParsedIntent {
+  return {
+    budget: parseBudget(message),
+    intent: parseIntent(message),
+    sport: parseSport(message),
+    preference: parseOddsPreference(message) ?? savedPreference,
+    consistentOnly: parseConsistentOnly(message),
+    requestedCount: parseLineupCount(message),
+    requestedSize: parsePickSize(message),
+    noOverlap: /\bno\s+(overlap|overlapping|repeat)|don'?t\s+(repeat|overlap)|independent|unique\s+players\b/i.test(message),
+    reply: null,
+    clarifyingQuestion: null,
+  };
+}
+
+/** Deterministic "I need your budget" ask that acknowledges everything we DID
+ *  understand (count, size, style, no-overlap, sport). Used when no budget was
+ *  given and the LLM didn't supply its own question (e.g. no API key) — so the
+ *  chat confirms the request instead of repeating a generic prompt. */
+function budgetAskText(parsed: ParsedIntent): string {
+  const bits: string[] = [];
+  if (parsed.requestedCount) bits.push(`${parsed.requestedCount} lineups`);
+  if (parsed.requestedSize) bits.push(`${parsed.requestedSize} picks each`);
+  if (parsed.preference === "goblin") bits.push("green goblins");
+  else if (parsed.preference === "demon") bits.push("red demons");
+  else if (parsed.preference === "standard") bits.push("standard lines");
+  if (parsed.consistentOnly) bits.push("consistent players only");
+  if (parsed.noOverlap) bits.push("no overlap");
+  if (parsed.sport) bits.push(parsed.sport);
+  const got = bits.length ? `Got it — ${bits.join(", ")}. ` : "";
+  return `${got}I just need your budget — how much do you want to wager? (e.g. "$10", "$25")`;
+}
+
+/** Map the LLM route's JSON (0/"" sentinels) into a ParsedIntent. */
+function normalizeIntent(raw: unknown, savedPreference: OddsPreference): ParsedIntent {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const intents = ["safe", "lottery", "balanced"];
+  const prefs = ["balanced", "goblin", "demon", "standard"];
+  const budget = num(r.budget);
+  const count = Math.round(num(r.lineupCount));
+  const size = Math.round(num(r.lineupSize));
+  return {
+    budget: budget > 0 ? budget : null,
+    intent: (intents.includes(r.intent as string) ? r.intent : "balanced") as Intent,
+    sport: str(r.sport) ? str(r.sport).toUpperCase() : null,
+    preference: (prefs.includes(r.oddsPreference as string) ? r.oddsPreference : savedPreference) as OddsPreference,
+    consistentOnly: !!r.consistentOnly,
+    requestedCount: count > 0 ? count : null,
+    requestedSize: size >= 2 ? size : null,
+    noOverlap: !!r.noOverlap,
+    reply: str(r.reply) || null,
+    clarifyingQuestion: str(r.clarifyingQuestion) || null,
+  };
+}
+
 function respond(
-  message: string,
+  parsed: ParsedIntent,
   props: Prop[],
   projections: Record<string, ProjectionResult>,
-  savedPreference: OddsPreference = "balanced",
 ): Message {
-  const budget = parseBudget(message);
-  const intent = parseIntent(message);
-  const sport = parseSport(message);
-  // Pick style: an inline request ("give me demons") wins over the saved
-  // preference; otherwise fall back to whatever the user set in the controls.
-  const preference = parseOddsPreference(message) ?? savedPreference;
-  // "Consistent / safe players only" — hard low-variance mode.
-  const consistentOnly = parseConsistentOnly(message);
+  const { budget, intent, sport, preference, consistentOnly, noOverlap } = parsed;
   const consistencyNote = consistentOnly
     ? " Consistent players only — coinflip picks and boom-or-bust players (high game-to-game variance) were excluded."
     : "";
@@ -763,8 +876,7 @@ function respond(
     return {
       id: `a-${Date.now()}`,
       role: "assistant",
-      text:
-        'I didn\'t catch a dollar amount. Tell me what you want to wager — "$5", "$25", "10 bucks" — and any preference for safe vs. lottery. I\'ll come back with a concrete plan.',
+      text: parsed.clarifyingQuestion || budgetAskText(parsed),
     };
   }
 
@@ -781,8 +893,7 @@ function respond(
   // evenly across that many slips (>= $1 each) and build exactly that many,
   // diversified. Falls through to the Safe/Balanced/Lottery options if the
   // board is too thin to fill them.
-  const requestedCount = parseLineupCount(message);
-  const requestedSize = parsePickSize(message);
+  const { requestedCount, requestedSize } = parsed;
   if (requestedCount !== null || requestedSize !== null) {
     const maxAffordable = Math.floor(budget); // PrizePicks $1-per-slip minimum
     // Count defaults to 1 when only a pick-size was named ("a 5-pick flex").
@@ -805,7 +916,7 @@ function respond(
         count,
         projections,
         preference,
-        true, // fillToCount — the user named an explicit number; give them that many
+        !noOverlap, // fill to the requested count UNLESS the user wants no overlap (independent slips only)
         consistentOnly,
       );
       if (plan) { builtSize = s; break; }

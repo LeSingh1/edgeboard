@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
-import { TrendingUp, TrendingDown, Sparkles, User2, Activity, Flame } from "lucide-react";
+import { TrendingUp, TrendingDown, Sparkles, User2, Activity, Flame, Zap } from "lucide-react";
 import type { Prop, PickSide } from "@/lib/types";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useProjectionStore } from "@/stores/projectionStore";
@@ -309,6 +309,20 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
               >
                 <Flame size={8} strokeWidth={3} aria-hidden />
                 {activeProp.trendingCount}
+              </span>
+            )}
+            {/* Flash-sale discount — PrizePicks temporarily dropped the line in
+                your favor. Show how far the line moved and the original line. */}
+            {activeProp.flashSaleLine != null && activeProp.flashSaleLine !== activeProp.line && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0 text-[8px] font-black uppercase border-2 tracking-widest border-[#FFE600] text-[#FFE600] bg-[#FFE600]/10"
+                title={`Flash sale — line discounted from ${activeProp.line} to ${activeProp.flashSaleLine}`}
+              >
+                <Zap size={8} strokeWidth={3} aria-hidden />
+                {(() => {
+                  const pct = Math.round((1 - activeProp.flashSaleLine / activeProp.line) * 100);
+                  return pct > 0 ? `-${pct}%` : "Flash";
+                })()}
               </span>
             )}
           </div>

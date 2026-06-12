@@ -1,5 +1,6 @@
 import type { Prop, PickSide, Lineup, PlayType, RiskMode } from "@/lib/types";
 import type { VariantSet } from "@/lib/variantGroups";
+import { hasRealModel } from "@/lib/projectionModel";
 
 /** Lazy generator: every k-sized subset of arr. */
 export function* combinations<T>(arr: T[], k: number): Generator<T[]> {
@@ -249,6 +250,34 @@ export function oddsPayoutFactor(props: Prop[]): number {
   return Math.max(0.1, stacked);
 }
 
+/**
+ * MORE-only invariant. PrizePicks demon & goblin variants have NO LESS side —
+ * you can only enter MORE. `optimize()` pins them to MORE at generation, but a
+ * pick can still arrive at a render carrying side:"less" if it was built against
+ * an older board snapshot where that rung was a standard line and the board
+ * later repriced it to a demon/goblin. Showing that stale LESS (e.g. a demon
+ * "LESS 4.5 · 95%") reads as a playable lock when it isn't enterable at all.
+ *
+ * Normalize any pick to the side a user could actually enter on PrizePicks,
+ * paired with that side's probability. `repriced:true` flags that we had to
+ * flip a non-standard pick off LESS — the UI surfaces a "line moved" warning so
+ * the stale 95% isn't mistaken for a real edge. Standard picks pass through
+ * unchanged (both sides are enterable).
+ */
+export function enterablePick(
+  prop: Pick<Prop, "oddsType" | "pMore" | "pLess">,
+  side: PickSide,
+  probability: number,
+): { side: PickSide; probability: number; repriced: boolean } {
+  if (prop.oddsType !== "standard" && side === "less") {
+    // Only MORE is enterable; show its true probability (pMore), falling back to
+    // the complement of the stored LESS prob if pMore is somehow absent.
+    const moreProb = Number.isFinite(prop.pMore) ? prop.pMore : 1 - probability;
+    return { side: "more", probability: moreProb, repriced: true };
+  }
+  return { side, probability, repriced: false };
+}
+
 /** Poisson Binomial DP: probability of exactly h hits among k independent picks. */
 export function poissonBinomial(probs: number[]): number[] {
   let dp = [1];
@@ -403,6 +432,14 @@ export interface OptimizeParams {
    * are generated for each lineup shape; sorting surfaces the best.
    */
   playType?: PlayType;
+  /**
+   * No-mock gate (default true): drop any prop still carrying the flat
+   * PrizePicks-implied placeholder (`modelVersion === "implied-v1"`) before
+   * building, so a slip can never be priced on a coinflip. A prop is kept only
+   * once a real game-log projection has stamped a real modelVersion onto it.
+   * Set false only for tests/diagnostics.
+   */
+  requireRealModel?: boolean;
 }
 
 export interface FilterOptions {
@@ -508,16 +545,23 @@ function computeFlex(
 }
 
 export function optimize({
-  selectedProps,
+  selectedProps: rawSelectedProps,
   lineupSize,
   entryCost,
   riskMode,
   maxResults = 50,
   variantsByPropId,
   playType,
+  requireRealModel = true,
   filters,
 }: OptimizeParams & { filters?: FilterOptions }): { lineups: Lineup[]; totalGenerated: number; elapsedMs: number } {
   const start = performance.now();
+  // No-mock gate: a prop still on the implied placeholder has no real projection
+  // behind it, so it can never enter a computed slip. Filtering here covers every
+  // optimizer-driven surface (SmartSuggest, BestSingleSlip, the optimizer page).
+  const selectedProps = requireRealModel
+    ? rawSelectedProps.filter((p) => hasRealModel(p.modelVersion))
+    : rawSelectedProps;
   const lineups: Lineup[] = [];
   let counter = 0;
 

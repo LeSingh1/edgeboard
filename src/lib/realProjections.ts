@@ -130,7 +130,7 @@ function r3(n: number) {
   return Math.round(n * 1000) / 1000;
 }
 
-function buildResult(values: number[], line: number, source: string, modelVersion: string): ProjectionResult {
+export function buildResult(values: number[], line: number, source: string, modelVersion: string): ProjectionResult {
   if (values.length < 5) {
     return { available: false, reason: `Only ${values.length} games — need at least 5` };
   }

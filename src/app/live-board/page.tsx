@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw, Bookmark, AlertTriangle } from "lucide-react";
+import { Calendar, Search, Filter, Sparkles, Loader2, RefreshCw, Bookmark, AlertTriangle, Zap } from "lucide-react";
 import { PropBox } from "@/components/PropBox";
 import { SeedBoardPanel } from "@/components/SeedBoardPanel";
 import { useSelectionStore } from "@/stores/selectionStore";
@@ -83,6 +83,7 @@ export default function LiveBoardPage() {
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or YYYY-MM-DD
   const [sort, setSort] = useState<SortId>("time");
   const [search, setSearch] = useState("");
+  const [flashOnly, setFlashOnly] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [liveStats, setLiveStats] = useState<LiveGameStat[]>([]);
 
@@ -182,6 +183,8 @@ export default function LiveBoardPage() {
     const collected: Prop[] = [];
     for (const p of data.props) {
       if (sport !== "ALL" && p.sport !== sport) continue;
+      // Flash-sale filter: PrizePicks temporarily discounted the line.
+      if (flashOnly && p.flashSaleLine == null) continue;
       if (dateFilter !== "all" && p.gameTime) {
         const d = new Date(p.gameTime);
         if (!isNaN(d.getTime()) && dateKey(d) !== dateFilter) continue;
@@ -201,7 +204,9 @@ export default function LiveBoardPage() {
       if (seen.has(fk)) continue;
       seen.add(fk);
       const vs = familyMap.get(fk);
-      collected.push(vs ? (primaryVariant(vs) ?? p) : p);
+      // When viewing flash sales, keep the flash-bearing prop itself so its
+      // discounted line + badge show; otherwise dedupe to the primary variant.
+      collected.push(flashOnly ? p : vs ? (primaryVariant(vs) ?? p) : p);
     }
     return [...collected].sort((a, b) => {
       if (sort === "line") return (b.line ?? 0) - (a.line ?? 0);
@@ -220,12 +225,18 @@ export default function LiveBoardPage() {
       }
       return new Date(a.gameTime).getTime() - new Date(b.gameTime).getTime();
     });
-  }, [data, sport, sort, search, dateFilter, familyMap]);
+  }, [data, sport, sort, search, dateFilter, flashOnly, familyMap]);
+
+  // Count of live flash-sale discounts (drives the banner + filter chip).
+  const flashCount = useMemo(
+    () => (data?.props ?? []).filter((p) => p.flashSaleLine != null).length,
+    [data],
+  );
 
   // Reset visibility when filters change — deferred to avoid cascade-render warning
   useEffect(() => {
     queueMicrotask(() => setVisibleCount(PAGE_SIZE));
-  }, [sport, sort, search, dateFilter]);
+  }, [sport, sort, search, dateFilter, flashOnly]);
 
   const visibleProps = filteredProps.slice(0, visibleCount);
   const hasMore = visibleCount < filteredProps.length;
@@ -460,6 +471,21 @@ export default function LiveBoardPage() {
             ))}
           </select>
         </div>
+        {flashCount > 0 && (
+          <button
+            onClick={() => setFlashOnly((v) => !v)}
+            title="PrizePicks flash sales — lines temporarily discounted in your favor"
+            className={cn(
+              "flex items-center gap-1.5 px-4 h-12 rounded-full border-4 font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-wider transition-all",
+              flashOnly
+                ? "bg-[#FFE600] border-[#FFE600] text-[#0D0D1A] shadow-[2px_2px_0_#0D0D1A]"
+                : "border-[#FFE600] text-[#FFE600] hover:bg-[#FFE600]/15",
+            )}
+          >
+            <Zap size={16} strokeWidth={3} />
+            Flash {flashCount}
+          </button>
+        )}
       </motion.div>
 
       {/* Loading state */}
@@ -470,6 +496,19 @@ export default function LiveBoardPage() {
             Loading {/* PrizePicks projections */} live board
           </p>
         </div>
+      )}
+
+      {/* Flash-sale banner — surfaces PrizePicks' temporarily discounted lines. */}
+      {!loading && flashCount > 0 && (
+        <button
+          onClick={() => setFlashOnly((v) => !v)}
+          className="w-full mb-5 flex items-center justify-center gap-2 rounded-2xl border-4 border-[#FFE600] bg-[#FFE600]/10 px-4 py-3 text-[#FFE600] font-[family-name:var(--font-heading)] font-black uppercase tracking-widest text-sm hover:bg-[#FFE600]/20 transition-all"
+        >
+          <Zap size={18} strokeWidth={3} />
+          {flashOnly
+            ? `Showing ${flashCount} flash-sale discount${flashCount === 1 ? "" : "s"} · tap to show all props`
+            : `${flashCount} flash-sale discount${flashCount === 1 ? "" : "s"} live — tap to view`}
+        </button>
       )}
 
       {/* Grid */}

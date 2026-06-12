@@ -102,6 +102,18 @@ export interface SportAdapter {
   readonly trainingSeasons: () => number[];
   readonly supportedStats: string[];
 
+  /**
+   * True only when `project()` resolves a REAL game-log projection FAST enough
+   * to serve a single prop live (targeted player search + gamelog in ~1 request).
+   * NBA/WNBA/MLB qualify. The other adapters' `fetchPlayerRoster` is a bulk
+   * TRAINING loader (e.g. tennis ingests ~520 weeks of history per roster) and
+   * their `project()` is a stub — so live they only produce the PrizePicks-
+   * implied placeholder, which must never become a pick. The no-mock gate keys
+   * off this flag: flip it true when a sport gets a genuine fast live projection
+   * and `isLiveProjectionLeague` opens for it automatically.
+   */
+  readonly hasLiveProjection?: boolean;
+
   fetchPlayerRoster(): Promise<PlayerRef[]>;
   fetchPlayerGamelog(playerId: string, seasons: number[]): Promise<RawGame[]>;
   /** Returns an array of ESPN event IDs for the given team's schedule in that season. */

@@ -23,5 +23,11 @@ import { ncaafAdapter } from "./ncaaf";
 registerAdapter(ncaafAdapter);
 import { lolAdapter } from "./lol";
 registerAdapter(lolAdapter);
-import { npbAdapter } from "./npb";
-registerAdapter(npbAdapter);
+// NPB intentionally dropped (2026-06-10). npb.jp's box-score scrape throttles
+// the ~4000-request fetch, so training failed every run and the model check
+// flagged it STALE. We don't use NPB picks, so it's no longer registered — the
+// live projection path falls back to "no real model" gracefully, and the
+// trainer / watchdog / model-check skip it entirely. Re-add the two lines below
+// to bring it back; the adapter code under ./npb is kept for that.
+// import { npbAdapter } from "./npb";
+// registerAdapter(npbAdapter);

@@ -14,6 +14,7 @@ const SUPPORTED_STATS = [
 export const mlbAdapter: SportAdapter = {
   leagues: ["MLB", "MLBLIVE"],
   displayName: "MLB",
+  hasLiveProjection: true, // fast MLB Stats API player search + gamelog
   trainingSeasons: () => { const y = new Date().getFullYear(); return Array.from({ length: 10 }, (_, i) => y - 9 + i); },
   supportedStats: SUPPORTED_STATS,
   fetchPlayerRoster,
