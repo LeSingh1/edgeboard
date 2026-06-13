@@ -440,6 +440,25 @@ export interface OptimizeParams {
    * Set false only for tests/diagnostics.
    */
   requireRealModel?: boolean;
+  /**
+   * Reference "now" (epoch ms) for the game-started filter. Defaults to
+   * Date.now(); injectable so tests can pin time deterministically.
+   */
+  now?: number;
+}
+
+/**
+ * A prop is bettable only BEFORE its game starts. The board snapshot can be
+ * many hours stale (PrizePicks hard-blocks server-side fetches, so the route
+ * falls back to its last good pull), and a finished game stays frozen in that
+ * snapshot as `pre_game` — so without this guard the model happily prices and
+ * surfaces picks for games that already ended. That is the classic "the picks
+ * are off" bug. Missing/unparseable start times are treated as upcoming so we
+ * never over-filter the rare malformed row.
+ */
+export function isUpcoming(prop: Prop, now: number = Date.now()): boolean {
+  const t = Date.parse(prop.gameTime);
+  return Number.isNaN(t) || t > now;
 }
 
 export interface FilterOptions {
@@ -553,14 +572,17 @@ export function optimize({
   variantsByPropId,
   playType,
   requireRealModel = true,
+  now = Date.now(),
   filters,
 }: OptimizeParams & { filters?: FilterOptions }): { lineups: Lineup[]; totalGenerated: number; elapsedMs: number } {
   const start = performance.now();
   // No-mock gate: a prop still on the implied placeholder has no real projection
-  // behind it, so it can never enter a computed slip. Filtering here covers every
-  // optimizer-driven surface (SmartSuggest, BestSingleSlip, the optimizer page).
+  // behind it, so it can never enter a computed slip. We also drop games that
+  // have already started — a stale board snapshot otherwise leaves finished
+  // games pickable. Together these cover every optimizer-driven surface
+  // (SmartSuggest, BestSingleSlip, the optimizer page).
   const selectedProps = requireRealModel
-    ? rawSelectedProps.filter((p) => hasRealModel(p.modelVersion))
+    ? rawSelectedProps.filter((p) => hasRealModel(p.modelVersion) && isUpcoming(p, now))
     : rawSelectedProps;
   const lineups: Lineup[] = [];
   let counter = 0;

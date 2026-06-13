@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES } from "./projectionCoverage";
 import { hasRealModel, IMPLIED_MODEL_VERSION } from "./projectionModel";
 import { buildAutoLineups } from "./autoPilot";
-import { optimize } from "./optimizer";
+import { optimize, isUpcoming } from "./optimizer";
 import "./sports/registerAll";
 import { allAdapters } from "./sports/registry";
 import type { Prop } from "./types";
@@ -20,7 +20,7 @@ function mkProp(over: Partial<Prop>): Prop {
   return {
     id: "x", source: "prizepicks", sport: "NBA", league: "NBA",
     playerName: "Test Player", team: "AAA", opponent: "BBB",
-    gameTime: "2026-06-11T23:00:00Z", statType: "Points", line: 20.5,
+    gameTime: "2099-06-11T23:00:00Z", statType: "Points", line: 20.5, // far-future: game-started filter keeps it
     status: "active", oddsType: "standard", pMore: 0.5, pLess: 0.5,
     modelVersion: "nba-espn-v1+iso", // real by default
     ...over,
@@ -131,5 +131,50 @@ describe("optimize — no mock slips", () => {
     ];
     const { lineups } = optimize({ selectedProps: props, lineupSize: 2, entryCost: 10, riskMode: "safe" });
     assert.equal(lineups.length, 0);
+  });
+});
+
+describe("game-started filter — a stale snapshot never makes a played game pickable", () => {
+  // The board can be hours stale (PrizePicks blocks server fetches), leaving a
+  // finished game frozen as pre_game. now is pinned so the test is deterministic.
+  const NOW = Date.parse("2026-06-13T18:00:00Z");
+  const past = (id: string, over: Partial<Prop> = {}) =>
+    mkProp({ id, gameTime: "2026-06-13T17:00:00Z", ...over }); // started 1h ago
+  const future = (id: string, over: Partial<Prop> = {}) =>
+    mkProp({ id, gameTime: "2026-06-13T23:00:00Z", ...over }); // tips off in 5h
+
+  it("isUpcoming: started → false, upcoming → true, bad/missing time → true", () => {
+    assert.equal(isUpcoming(past("a"), NOW), false);
+    assert.equal(isUpcoming(future("b"), NOW), true);
+    assert.equal(isUpcoming(mkProp({ id: "c", gameTime: "" }), NOW), true);
+    assert.equal(isUpcoming(mkProp({ id: "d", gameTime: "not-a-date" }), NOW), true);
+  });
+
+  it("buildAutoLineups drops the already-started game, keeps the upcoming one", () => {
+    const props = [
+      future("fut1", { playerName: "Up A", team: "AAA", statType: "Points", line: 10.5 }),
+      future("fut2", { playerName: "Up B", team: "BBB", statType: "Rebounds", line: 6.5 }),
+      past("done1", { playerName: "Done", team: "CCC", statType: "Assists", line: 4.5 }),
+    ];
+    const real = {
+      fut1: proj({ available: true, pMore: 0.6, pLess: 0.4, projection: 13, sigma: 3, recent: [11, 12, 13, 14, 12] }),
+      fut2: proj({ available: true, pMore: 0.6, pLess: 0.4, projection: 8, sigma: 2, recent: [7, 8, 9, 7, 8] }),
+      done1: proj({ available: true, pMore: 0.9, pLess: 0.1, projection: 9, sigma: 2, recent: [8, 9, 10, 9, 8] }),
+    };
+    const r = buildAutoLineups(props, 2, 3, 5, { sport: "ALL", realProjections: real, now: NOW });
+    const ids = new Set(r.lineups.flatMap((l) => l.picks.map((p) => p.prop.id)));
+    assert.equal(ids.has("done1"), false, "a game that already started must never be a pick");
+    assert.ok(r.poolSize > 0 && !ids.has("done1"), "upcoming games still build");
+  });
+
+  it("optimize drops a started game from a computed slip", () => {
+    const props = [
+      future("u1", { playerName: "U1", team: "AAA", pMore: 0.6, pLess: 0.4 }),
+      future("u2", { playerName: "U2", team: "BBB", pMore: 0.6, pLess: 0.4 }),
+      past("p1", { playerName: "P1", team: "CCC", pMore: 0.6, pLess: 0.4 }),
+    ];
+    const { lineups } = optimize({ selectedProps: props, lineupSize: 2, entryCost: 10, riskMode: "safe", now: NOW });
+    const ids = new Set(lineups.flatMap((l) => l.picks.map((p) => p.prop.id)));
+    assert.equal(ids.has("p1"), false, "started game excluded from optimizer slips");
   });
 });

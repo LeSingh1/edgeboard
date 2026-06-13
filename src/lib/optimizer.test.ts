@@ -13,7 +13,7 @@ function mkProp(over: Partial<Prop>): Prop {
     playerName: "Test Player",
     team: "AAA",
     opponent: "BBB",
-    gameTime: "2026-06-03T23:00:00Z",
+    gameTime: "2099-06-03T23:00:00Z", // far-future so the game-started filter keeps the fixture
     statType: "Points",
     line: 20.5,
     status: "active",

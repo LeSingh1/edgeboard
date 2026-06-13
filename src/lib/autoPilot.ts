@@ -23,7 +23,7 @@
  */
 
 import { groupByFamily, familyKeyOf, type VariantSet } from "@/lib/variantGroups";
-import { optimize } from "@/lib/optimizer";
+import { optimize, isUpcoming } from "@/lib/optimizer";
 import { isLiveProjectionLeague } from "@/lib/projectionCoverage";
 import type { Lineup, PickSide, Prop } from "@/lib/types";
 import type { ProjectionResult } from "@/lib/realProjections";
@@ -94,6 +94,9 @@ export interface AutoPilotOptions {
    *  came back `available:false`) are excluded, so a slip can never be built on the
    *  flat PrizePicks-implied placeholder. Set false only for tests/diagnostics. */
   requireRealModel?: boolean;
+  /** Reference "now" (epoch ms) for the game-started filter. Defaults to
+   *  Date.now(); injectable so tests can pin time deterministically. */
+  now?: number;
 }
 
 export interface AutoPilotResult {
@@ -449,6 +452,7 @@ export function buildAutoLineups(
   const favorConsistency = (options.favorConsistency ?? false) || consistentOnly;
   // No-mock-data gate (default ON): only real-model-priced props can become picks.
   const requireRealModel = options.requireRealModel ?? true;
+  const now = options.now ?? Date.now();
   const MIN_CLEAR = 0.6; // must have cleared the line in >= 60% of recent games
   const families = groupByFamily(allProps);
 
@@ -460,6 +464,10 @@ export function buildAutoLineups(
     // No-mock gate: a league with no inlined projection model only ever carries
     // the flat PrizePicks-implied placeholder, so it can never be a real pick.
     if (requireRealModel && !isLiveProjectionLeague(p.sport)) continue;
+    // Never surface a pick for a game that already started. A stale board
+    // snapshot (PrizePicks blocks server fetches) keeps finished games frozen
+    // as pre_game; this is what makes picks look "off" the morning after.
+    if (requireRealModel && !isUpcoming(p, now)) continue;
     if ((options.excludeLive ?? true) && p.isLive) continue;
     if ((options.excludeCombo ?? true) && p.isCombo) continue;
     // Team allowlist (e.g. "alive playoff teams only"). Empty set = no filter.
