@@ -114,13 +114,18 @@ export interface AutoPilotResult {
  * Compute-budget caps. C(n, k) × 2^k roughly grows by ~16× per increment in k,
  * so we shrink the pool as lineup size grows. These caps keep the worst case
  * under ~10M evaluations on a generation, well inside one frame in the browser.
+ *
+ * When more lineups are requested the pool scales up so the optimizer has
+ * enough distinct combinations to fill all slots with genuinely different picks.
+ * Verified: C(base×1.5, k)×2^k stays well under 10M for all lineup sizes.
+ *   6-8 lineups → ×1.25  (e.g. 3-pick pool 28→35)
+ *   9-10 lineups → ×1.5  (e.g. 3-pick pool 28→42, C(42,3)×8 ≈ 92k)
  */
-function poolCapFor(lineupSize: number): number {
-  if (lineupSize <= 2) return 36;
-  if (lineupSize === 3) return 28;
-  if (lineupSize === 4) return 22;
-  if (lineupSize === 5) return 18;
-  return 14; // 6-pick
+function poolCapFor(lineupSize: number, lineupCount: number): number {
+  const base = lineupSize <= 2 ? 36 : lineupSize === 3 ? 28 : lineupSize === 4 ? 22 : lineupSize === 5 ? 18 : 14;
+  if (lineupCount >= 9) return Math.round(base * 1.5);
+  if (lineupCount >= 6) return Math.round(base * 1.25);
+  return base;
 }
 
 /** Standard-normal CDF (Abramowitz-Stegun) — re-prices a flash-sale prop at its
@@ -569,7 +574,7 @@ export function buildAutoLineups(
   // (that blows up the optimizer's combination enumeration and OOMs). The
   // fill-to-count behavior tops up from the optimizer's existing ranked output
   // instead, which needs no extra pool material.
-  const cap = options.maxPoolSize ?? poolCapFor(lineupSize);
+  const cap = options.maxPoolSize ?? poolCapFor(lineupSize, lineupCount);
   const pool = leagueCapped.slice(0, cap);
   const poolProps = pool.map((c) => c.prop);
 
@@ -596,7 +601,11 @@ export function buildAutoLineups(
     lineupSize,
     entryCost,
     riskMode: "safe",
-    maxResults: Math.max(lineupCount * 6, 60),
+    // Scale candidate count with lineups requested: selectDiverse needs a large
+    // enough ranked list to find N genuinely different slips. 12× gives 120
+    // candidates for 10 lineups vs the old 60, so Pass 1/2 diversity has more
+    // to work with before Pass 3 fills with overlapping slips.
+    maxResults: Math.max(lineupCount * 12, 60),
     // buildAutoLineups owns its own no-mock gate (league filter + the per-prop
     // real-availability check above), and uses a two-pass flow where pass-1
     // EXPLORES with still-implied props before pass-2 rebuilds from backed-only
