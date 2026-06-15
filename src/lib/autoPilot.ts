@@ -24,7 +24,7 @@
 
 import { groupByFamily, familyKeyOf, type VariantSet } from "@/lib/variantGroups";
 import { optimize, isUpcoming } from "@/lib/optimizer";
-import { isLiveProjectionLeague } from "@/lib/projectionCoverage";
+import { isLiveProjectionLeague, isBlockedSport } from "@/lib/projectionCoverage";
 import type { Lineup, PickSide, Prop } from "@/lib/types";
 import type { ProjectionResult } from "@/lib/realProjections";
 
@@ -464,6 +464,9 @@ export function buildAutoLineups(
     // No-mock gate: a league with no inlined projection model only ever carries
     // the flat PrizePicks-implied placeholder, so it can never be a real pick.
     if (requireRealModel && !isLiveProjectionLeague(p.sport)) continue;
+    // Hard no-bet block: sports with unreliable calibration data are prohibited
+    // regardless of requireRealModel or modelVersion.
+    if (isBlockedSport(p.sport)) continue;
     // Never surface a pick for a game that already started. A stale board
     // snapshot (PrizePicks blocks server fetches) keeps finished games frozen
     // as pre_game; this is what makes picks look "off" the morning after.

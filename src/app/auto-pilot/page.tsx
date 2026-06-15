@@ -40,7 +40,7 @@ import type { LeagueSummary, PickSide, Prop } from "@/lib/types";
 const ENTRY_PRESETS = [5, 10, 20, 50, 100] as const;
 const MAX_SPEND_PRESETS = [10, 25, 50, 100, 200] as const;
 const LINEUP_SIZES = [2, 3, 4, 5, 6] as const;
-const LINEUP_COUNTS = [1, 2, 3, 4, 5] as const;
+const LINEUP_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 /** Pick-style choices for the "What do you lean toward?" control. Each maps to
  *  an OddsPreference the optimizer honors when ranking + choosing variants. */
@@ -72,7 +72,7 @@ const MIN_AUTO_ENTRY = 1;
 // distinct slips, then keeps only the ones genuinely worth playing (see
 // recommendLineupCount) — so Auto returns 1 when there is one standout and more
 // only when several are real, never padding to a fixed number.
-const MAX_AUTO_LINEUPS = 5;
+const MAX_AUTO_LINEUPS = 10;
 
 /**
  * Auto entry-cost. $20 per slip by default, but sized DOWN to fit `count` slips

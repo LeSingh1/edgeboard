@@ -1,6 +1,7 @@
 import type { Prop, PickSide, Lineup, PlayType, RiskMode } from "@/lib/types";
 import type { VariantSet } from "@/lib/variantGroups";
 import { hasRealModel } from "@/lib/projectionModel";
+import { isBlockedSport } from "@/lib/projectionCoverage";
 
 /** Lazy generator: every k-sized subset of arr. */
 export function* combinations<T>(arr: T[], k: number): Generator<T[]> {
@@ -581,9 +582,12 @@ export function optimize({
   // have already started — a stale board snapshot otherwise leaves finished
   // games pickable. Together these cover every optimizer-driven surface
   // (SmartSuggest, BestSingleSlip, the optimizer page).
-  const selectedProps = requireRealModel
+  // Hard no-bet block applied unconditionally: BLOCKED_SPORTS are excluded even
+  // when requireRealModel is false (e.g. buildAutoLineups diagnostic mode).
+  const selectedProps = (requireRealModel
     ? rawSelectedProps.filter((p) => hasRealModel(p.modelVersion) && isUpcoming(p, now))
-    : rawSelectedProps;
+    : rawSelectedProps
+  ).filter((p) => !isBlockedSport(p.sport));
   const lineups: Lineup[] = [];
   let counter = 0;
 

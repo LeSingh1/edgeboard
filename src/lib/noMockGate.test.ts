@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES } from "./projectionCoverage";
+import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport, BLOCKED_SPORTS } from "./projectionCoverage";
 import { hasRealModel, IMPLIED_MODEL_VERSION } from "./projectionModel";
 import { buildAutoLineups } from "./autoPilot";
 import { optimize, isUpcoming } from "./optimizer";
@@ -56,6 +56,54 @@ describe("isLiveProjectionLeague — only inlined-model leagues are covered", ()
       .map((a) => a.displayName.toUpperCase())
       .sort();
     assert.deepEqual(flagged, [...LIVE_PROJECTION_BASE_LEAGUES].sort());
+  });
+});
+
+describe("isBlockedSport — hard no-bet list", () => {
+  it("NPB is blocked", () => {
+    assert.equal(isBlockedSport("NPB"), true);
+    assert.equal(isBlockedSport("npb"), true);
+  });
+  it("live-projection leagues are not blocked", () => {
+    for (const l of LIVE_PROJECTION_BASE_LEAGUES) {
+      assert.equal(isBlockedSport(l), false, `${l} must not be blocked`);
+    }
+  });
+  it("handles null/empty", () => {
+    assert.equal(isBlockedSport(undefined), false);
+    assert.equal(isBlockedSport(""), false);
+  });
+});
+
+describe("optimize — BLOCKED_SPORTS hard excluded even with requireRealModel false", () => {
+  it("NPB props never enter a slip regardless of requireRealModel", () => {
+    const props: Prop[] = [
+      mkProp({ id: "nba1", playerName: "NBA One", team: "AAA", pMore: 0.7, pLess: 0.3 }),
+      mkProp({ id: "nba2", playerName: "NBA Two", team: "BBB", pMore: 0.7, pLess: 0.3 }),
+      mkProp({ id: "npb1", sport: "NPB", league: "NPB", playerName: "NPB Pitcher", team: "CCC", pMore: 0.9, pLess: 0.1, modelVersion: "real-outcomes-v1" }),
+    ];
+    const { lineups } = optimize({ selectedProps: props, lineupSize: 2, entryCost: 10, riskMode: "safe", requireRealModel: false });
+    const ids = new Set(lineups.flatMap((l) => l.picks.map((p) => p.prop.id)));
+    assert.equal(ids.has("npb1"), false, "NPB prop must never appear in any slip");
+    assert.ok(lineups.length > 0, "the two NBA props still form a slip");
+  });
+});
+
+describe("buildAutoLineups — BLOCKED_SPORTS hard excluded", () => {
+  it("NPB props never enter the pool even if requireRealModel is false", () => {
+    const props: Prop[] = [
+      mkProp({ id: "n1", playerName: "A", team: "AAA", statType: "Points", line: 10.5 }),
+      mkProp({ id: "n2", playerName: "B", team: "BBB", statType: "Rebounds", line: 6.5 }),
+      mkProp({ id: "np1", sport: "NPB", league: "NPB", playerName: "Pitcher", team: "CCC", statType: "Hits", line: 0.5, modelVersion: "real-outcomes-v1" }),
+    ];
+    const real = {
+      n1: proj({ available: true, pMore: 0.7, pLess: 0.3, projection: 13, sigma: 3, recent: [11, 12, 13, 14, 12] }),
+      n2: proj({ available: true, pMore: 0.7, pLess: 0.3, projection: 8, sigma: 2, recent: [7, 8, 9, 7, 8] }),
+      np1: proj({ available: true, pMore: 0.9, pLess: 0.1, projection: 1, sigma: 0.5, recent: [1, 1, 1, 1, 1] }),
+    };
+    const r = buildAutoLineups(props, 2, 3, 5, { sport: "ALL", realProjections: real, requireRealModel: false });
+    const ids = new Set(r.lineups.flatMap((l) => l.picks.map((p) => p.prop.id)));
+    assert.equal(ids.has("np1"), false, "NPB must never enter a lineup");
   });
 });
 

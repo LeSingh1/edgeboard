@@ -47,3 +47,22 @@ export function isLiveProjectionLeague(sport?: string | null): boolean {
   if (!sport) return false;
   return COVERED.has(sport.trim().toUpperCase());
 }
+
+/**
+ * Sports that are explicitly prohibited from appearing in any generated slip,
+ * regardless of their modelVersion. Listed here when the calibration data is
+ * too sparse or unreliable to trust — NPB has only a `real-outcomes-v1`
+ * artifact (10 training samples, 1 calibration bucket) and no inlined
+ * projection path, so its probability numbers are not real predictions.
+ *
+ * A sport stays on this list until it has a proper training-v2 artifact AND
+ * an inlined `project()` function in `realProjections.ts`. It must also be
+ * added to `LIVE_PROJECTION_BASE_LEAGUES` above to pass the gate.
+ */
+export const BLOCKED_SPORTS = new Set(["NPB"]);
+
+/** True iff `sport` is on the hard no-bet list. */
+export function isBlockedSport(sport?: string | null): boolean {
+  if (!sport) return false;
+  return BLOCKED_SPORTS.has(sport.trim().toUpperCase());
+}

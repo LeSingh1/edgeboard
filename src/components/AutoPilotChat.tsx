@@ -294,9 +294,9 @@ function buildPlan(
 function generatePlans(props: Prop[], budget: number, intent: Intent, real: Record<string, ProjectionResult>, preference: OddsPreference, consistentOnly = false): PlanOption[] {
   const out: PlanOption[] = [];
 
-  // Safe split: divide budget into ~3-5 small lineups of size 3, $1-$5 each.
+  // Safe split: divide budget into up to 10 small lineups of size 3, $1-$5 each.
   // Use the largest divisor that keeps per-lineup entry ≥ $1.
-  const safeCount = budget >= 10 ? 5 : budget >= 5 ? Math.min(5, Math.floor(budget)) : 1;
+  const safeCount = budget >= 10 ? Math.min(10, Math.floor(budget)) : budget >= 5 ? Math.min(10, Math.floor(budget)) : 1;
   const safeEntry = Math.max(1, Math.floor((budget / Math.max(1, safeCount)) * 100) / 100);
   if (safeCount >= 2) {
     const safe = buildPlan(
