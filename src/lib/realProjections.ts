@@ -134,6 +134,16 @@ export function buildResult(values: number[], line: number, source: string, mode
   if (values.length < 5) {
     return { available: false, reason: `Only ${values.length} games — need at least 5` };
   }
+  // Certainty gate: a player with NO recorded activity in this stat across every
+  // recent game (all zeros) almost always means they did NOT play those games — a
+  // benched keeper, an inactive sub. The model would otherwise project ~0 and clamp
+  // to a false ~90% "under", a confident-looking pick built on nothing (observed:
+  // Angus Gunn Goalie Saves, 10 straight 0s → "90% under 3.5"). We are not certain
+  // here, so exclude it — the no-mock gate drops it rather than surfacing a guess.
+  const activeGames = values.filter((v) => v !== 0).length;
+  if (activeGames === 0) {
+    return { available: false, reason: "No recorded activity in recent games — likely did not play" };
+  }
   const { mean: equalMean, std } = meanStd(values);
   // Base mean = blend of the equal-weighted mean and a recency-weighted mean.
   // Recent games predict the next game better than season-old ones, so we pull

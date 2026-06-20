@@ -21,7 +21,12 @@ interface EspnSearchItem {
 }
 
 /** Resolve a player name → ESPN athlete id within a sport+league (one request). */
-async function findAthleteId(name: string, sport: string, league: string): Promise<string | null> {
+async function findAthleteId(
+  name: string,
+  sport: string,
+  league: string,
+  leagueMatch: "exact" | "sport" = "exact",
+): Promise<string | null> {
   const cleaned = name.normalize("NFKD").replace(/[̀-ͯ]/g, "");
   const url = `https://site.web.api.espn.com/apis/common/v3/search?query=${encodeURIComponent(cleaned)}&limit=10&page=1&type=player`;
   try {
@@ -30,11 +35,15 @@ async function findAthleteId(name: string, sport: string, league: string): Promi
     const data = await res.json();
     const items: EspnSearchItem[] = data.items ?? [];
     const lower = cleaned.toLowerCase();
+    // Soccer players span dozens of club leagues (Ronaldo searches as ksa.1) and
+    // the gamelog is fetched league-agnostically (soccer/all), so "sport" matching
+    // accepts any player in the sport instead of requiring an exact league hit.
+    const leagueOk = (it: EspnSearchItem) => leagueMatch === "sport" || it.league === league;
     const exact = items.find(
-      (it) => it.type === "player" && it.sport === sport && it.league === league && it.displayName.toLowerCase() === lower,
+      (it) => it.type === "player" && it.sport === sport && leagueOk(it) && it.displayName.toLowerCase() === lower,
     );
     if (exact) return exact.id;
-    const inLeague = items.find((it) => it.type === "player" && it.sport === sport && it.league === league);
+    const inLeague = items.find((it) => it.type === "player" && it.sport === sport && leagueOk(it));
     return inLeague ? inLeague.id : null;
   } catch {
     return null;
@@ -103,6 +112,11 @@ export interface EspnLiveConfig {
   modelVersion: string;
   /** PrizePicks statType → how to read it from a gamelog row. */
   stats: Record<string, LiveStatExtractor>;
+  /** How to match the ESPN search hit. "exact" requires the player's league to
+   *  equal `league` (default). "sport" matches any player in `sport` — used for
+   *  soccer, whose players span dozens of club leagues and whose gamelog is read
+   *  from the league-agnostic `soccer/all` endpoint. */
+  leagueMatch?: "exact" | "sport";
 }
 
 /** One-stat convenience: read a single ESPN label. */
@@ -123,7 +137,7 @@ export async function espnLiveProjection(prop: Prop, cfg: EspnLiveConfig): Promi
   if (prop.isCombo) return { available: false, reason: "Combo prop — skipped" };
   const extractor = cfg.stats[prop.statType];
   if (!extractor) return { available: false, reason: `No live model for "${prop.statType}" in ${cfg.league.toUpperCase()}` };
-  const id = await findAthleteId(prop.playerName, cfg.sport, cfg.league);
+  const id = await findAthleteId(prop.playerName, cfg.sport, cfg.league, cfg.leagueMatch ?? "exact");
   if (!id) return { available: false, reason: `Player "${prop.playerName}" not found in ESPN ${cfg.league.toUpperCase()}` };
   const { labels, rows } = await fetchGamelog(cfg.sport, cfg.league, id);
   if (rows.length === 0) return { available: false, reason: "ESPN returned no games for this player" };
@@ -153,6 +167,41 @@ export const NHL_LIVE: EspnLiveConfig = {
 };
 
 export const nhlLiveProjection = (prop: Prop): Promise<ProjectionResult> => espnLiveProjection(prop, NHL_LIVE);
+
+// ── Soccer / World Cup ──
+// ESPN soccer gamelog is league-agnostic: soccer/all/athletes/{id}/gamelog.
+// Field-player labels: G A SHOT SOG FC FA OF YC RC.  Goalkeeper labels: CS SV GA
+// G A FC FA YC RC. A label absent for the player's role (e.g. SHOT for a keeper,
+// SV for a striker) reads as null → unavailable → excluded by the no-mock gate.
+// Recent CLUB form is the projection base — exactly "what a player did on their
+// club before the World Cup". NOTE: ESPN's gamelog has NO passing/touch columns,
+// so pass-attempt props cannot be priced and stay excluded (honest, not faked).
+export const SOCCER_LIVE: EspnLiveConfig = {
+  sport: "soccer",
+  league: "all",
+  modelVersion: "soccer-espn-live-v1",
+  leagueMatch: "sport",
+  stats: {
+    Goals: pick("G"),
+    Assists: pick("A"),
+    Shots: pick("SHOT"),
+    "Shots on Target": pick("SOG"),
+    SOT: pick("SOG"),
+    "Fouls Committed": pick("FC"),
+    Fouls: pick("FC"),
+    "Fouls Drawn": pick("FA"),
+    "Fouls Suffered": pick("FA"),
+    "Goals+Assists": sum("G", "A"),
+    "Goal + Assist": sum("G", "A"),
+    Offsides: pick("OF"),
+    // Goalkeeper stats (present only on a keeper's gamelog).
+    Saves: pick("SV"),
+    "Goalie Saves": pick("SV"),
+    "Goals Allowed": pick("GA"),
+    "Clean Sheets": pick("CS"),
+  },
+};
+export const soccerLiveProjection = (prop: Prop): Promise<ProjectionResult> => espnLiveProjection(prop, SOCCER_LIVE);
 
 // ── NFL ──
 // ESPN concatenates each player's stat BLOCKS into one labels row, and the

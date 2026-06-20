@@ -221,3 +221,56 @@ describe("buildAutoLineups — explicit pick-style preference is binding", () =>
     assert.ok(types.size > 1, "balanced pool should contain more than one pick style");
   });
 });
+
+describe("buildAutoLineups — diversity is player-based (no same-player clones)", () => {
+  // Regression for the reported bug: two 2-pick slips came back leading with the
+  // SAME player, and the second leg was the SAME player on a different stat
+  // ("PRA LESS" vs "PTS+REBS LESS"). The old overlap metric counted prop ids, so
+  // a star's alternate-stat prop read as a brand-new pick and the same roster
+  // recurred. Overlap is now measured by player, so a slip that reuses both
+  // players of an earlier slip is rejected as a clone.
+  const real: Record<string, import("./realProjections").ProjectionResult> = {};
+  const props: Prop[] = [];
+  const teams = ["LVA", "NYL", "IND", "CHI", "SEA", "MIN", "PHX", "ATL"];
+  const addPlayer = (i: number, player: string, statType: string, id: string, pMore: number) => {
+    props.push(mkProp({
+      id, playerName: player, statType, line: 15.5,
+      team: teams[i % teams.length], opponent: teams[(i + 1) % teams.length],
+      oddsType: "standard", pMore, pLess: 1 - pMore,
+    }));
+    real[id] = { available: true, pMore, pLess: 1 - pMore, projection: 18, sigma: 4, sampleSize: 20, recent: [], source: "test", modelVersion: "test-v1" };
+  };
+  // The "star" appears twice on alternate stats — the exact clone trap.
+  addPlayer(0, "Star Player", "PRA", "star_pra", 0.82);
+  addPlayer(0, "Star Player", "PTS+REBS", "star_ptsrebs", 0.80);
+  // Plenty of OTHER distinct players so genuinely different slips are buildable.
+  addPlayer(1, "Beta", "Points", "beta", 0.74);
+  addPlayer(2, "Gamma", "Points", "gamma", 0.73);
+  addPlayer(3, "Delta", "Points", "delta", 0.72);
+  addPlayer(4, "Epsilon", "Points", "epsilon", 0.71);
+  addPlayer(5, "Zeta", "Points", "zeta", 0.70);
+
+  it("never returns two slips that share both players (no roster clones)", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, { realProjections: real });
+    assert.ok(res.lineups.length > 1, "the rich pool should support multiple distinct slips");
+    for (let a = 0; a < res.lineups.length; a++) {
+      for (let b = a + 1; b < res.lineups.length; b++) {
+        const pa = new Set(res.lineups[a].picks.map((p) => p.prop.playerName));
+        const shared = res.lineups[b].picks.filter((p) => pa.has(p.prop.playerName)).length;
+        assert.ok(shared < 2, `slips ${a} and ${b} share ${shared} players — that's a clone`);
+      }
+    }
+  });
+
+  it("does not anchor every slip on the same star (the 'same clips' symptom)", () => {
+    const res = buildAutoLineups(props, 2, 3, 5, { realProjections: real });
+    // The star may anchor a slip or two (overlap of one player is allowed), but
+    // a rich pool must NOT collapse to the same star in every single slip — that
+    // is exactly the screenshot's "showing the exact same clips" symptom.
+    const slipsWithStar = res.lineups.filter((l) => l.picks.some((p) => p.prop.playerName === "Star Player"));
+    assert.ok(
+      slipsWithStar.length < res.lineups.length,
+      "every slip reused the same star — diversity collapsed",
+    );
+  });
+});

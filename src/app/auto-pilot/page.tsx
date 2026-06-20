@@ -331,12 +331,57 @@ export default function AutoPilotPage() {
     // whole pool), fetched at the store's 3-at-a-time cap. Props the model
     // can't price (ESPN gamelog unavailable) keep their implied fallback.
     let finalResult = r;
-    const distinct = new Map<string, Prop>();
-    for (const l of r.lineups) for (const pk of l.picks) distinct.set(pk.prop.id, pk.prop);
-    if (distinct.size > 0) {
+    // Warm REAL projections for a PLAYER-DIVERSE slice of the candidate pool, not
+    // just the pass-1 picks. Pass-1 ranks on FLAT implied probabilities (every
+    // standard prop = 0.500), so its "top" slips cluster on a handful of props by
+    // tiebreak; warming only those starved pass-2 of distinct players and made it
+    // rebuild N near-identical slips off the same 2 stars — even when the board
+    // had dozens of real-backed players. Casting a wider net (one prop per player,
+    // capped to bound ESPN fetches) gives pass-2 enough distinct real-backed
+    // players to form genuinely different rosters. Pass-2 re-scores on the real
+    // model, so the extra warmed props only widen the choice set, never lower
+    // quality.
+    const toWarm = new Map<string, Prop>();
+    const warmedPlayers = new Set<string>();
+    for (const l of r.lineups) for (const pk of l.picks) {
+      toWarm.set(pk.prop.id, pk.prop);
+      warmedPlayers.add(pk.prop.playerName);
+    }
+    // Price a BROAD, game-diverse slice of the full menu — not just the ~40-prop
+    // compute pool. On the flat implied board every goblin looks identical (0.588),
+    // so the pre-filter can't tell a 71%-real goblin from a 52% one; pricing only
+    // those few caps achievable hit %. Pricing more of them lets pass-2 re-rank on
+    // REAL data and surface the genuine best picks. Round-robin across games so the
+    // warm set spans many matchups (independent slips need players in DIFFERENT
+    // games), capped to bound the ESPN fetch cost.
+    const warmTarget = Math.min(
+      Math.max(resolved.lineupCount * resolved.lineupSize * 4, 40),
+      60,
+    );
+    const gameKey = (p: Prop) =>
+      [p.team ?? "", p.opponent ?? ""].map((s) => s.toUpperCase()).sort().join("@");
+    const byGame = new Map<string, Prop[]>();
+    for (const p of r.warmCandidates) {
+      if (warmedPlayers.has(p.playerName)) continue;
+      const g = gameKey(p);
+      (byGame.get(g) ?? byGame.set(g, []).get(g)!).push(p);
+    }
+    const queues = [...byGame.values()];
+    for (let added = true; toWarm.size < warmTarget && added; ) {
+      added = false;
+      for (const q of queues) {
+        if (toWarm.size >= warmTarget) break;
+        const p = q.shift();
+        if (!p || warmedPlayers.has(p.playerName)) continue;
+        warmedPlayers.add(p.playerName);
+        toWarm.set(p.id, p);
+        added = true;
+      }
+    }
+    if (toWarm.size > 0) {
       setPricingPicks(true);
       try {
-        await Promise.all([...distinct.values()].map((p) => fetchProjection(p)));
+        await Promise.all([...toWarm.values()].map((p) => fetchProjection(p)));
         const fresh = useProjectionStore.getState().byProp;
         // No-mock guarantee: rebuild only from props whose REAL projection came
         // back available. Anything the model couldn't price (player/stat missing)

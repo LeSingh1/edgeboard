@@ -24,8 +24,9 @@
  * is genuinely inlined, add its base league here and the gate opens automatically.
  */
 
-/** Base leagues with a real, inlined projection model today. */
-export const LIVE_PROJECTION_BASE_LEAGUES = ["NBA", "WNBA", "MLB", "NHL", "NFL"] as const;
+/** Base leagues with a real, inlined projection model today. "WORLD CUP" routes
+ *  to the soccer adapter's ESPN game-log projection (recent club form). */
+export const LIVE_PROJECTION_BASE_LEAGUES = ["NBA", "WNBA", "MLB", "NHL", "NFL", "WORLD CUP"] as const;
 
 /** PrizePicks segment/variant suffixes that still resolve to the base model
  *  (e.g. NBA1Q, WNBA1H are scaled fractions of the full-game projection).

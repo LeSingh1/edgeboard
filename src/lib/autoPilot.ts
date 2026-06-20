@@ -102,6 +102,12 @@ export interface AutoPilotOptions {
 export interface AutoPilotResult {
   /** The candidate pool fed to the optimizer (already family-deduped + variant-resolved). */
   candidates: Prop[];
+  /** The FULL family-deduped, enterable, upcoming menu BEFORE the compute pool cap —
+   *  one best-rung prop per player, sorted by score. The optimizer can only chew a
+   *  capped slice (`candidates`), but a caller warming real projections should price
+   *  from this broader list so pass-2 can re-rank on real data and surface the genuine
+   *  best picks (otherwise the implied-board pre-filter caps achievable hit %). */
+  warmCandidates: Prop[];
   lineups: Lineup[];
   poolSize: number;
   totalEvaluated: number;
@@ -230,17 +236,27 @@ function bestVariant(
  */
 function selectDiverse(lineups: Lineup[], k: number, size: number, fill = false): Lineup[] {
   if (lineups.length === 0 || k <= 0) return [];
-  const maxShared = Math.max(1, Math.floor(size * 0.5)); // ≤ ~half the picks shared
+  // Pass-1 strictness: aim for genuinely INDEPENDENT slips (the whole point of
+  // playing several). A 2-pick must share 0 players to qualify here — otherwise
+  // one dominant star anchors every slip and they read as "the same clips". Larger
+  // slips tolerate a little shared material so a rich board can still fill k.
+  // Thin boards relax via Pass 2/3 below; this only governs the strict first pass.
+  const maxShared = Math.floor((size - 1) / 2); // size 2→0, 3→1, 4→1, 5→2, 6→2
   const out: Lineup[] = [lineups[0]];
   const used = new Set<string>([lineups[0].id]);
 
-  /** Most picks `l` shares with any lineup already chosen. */
+  /** Most picks `l` shares with any lineup already chosen — measured by PLAYER,
+   *  not prop id. Two slips that reuse the same athlete are correlated and read
+   *  as duplicates even when the stat differs (e.g. the same player's "PRA LESS
+   *  17.5" vs "PTS+REBS LESS 15.5" are distinct prop ids but the same bet on the
+   *  same person). Counting shared players is what makes "give me N lineups"
+   *  return N genuinely different rosters instead of N variations on one star. */
   const overlapWith = (l: Lineup): number => {
-    const lIds = new Set(l.picks.map((p) => p.prop.id));
+    const lPlayers = new Set(l.picks.map((p) => p.prop.playerName));
     let max = 0;
     for (const e of out) {
       let s = 0;
-      for (const p of e.picks) if (lIds.has(p.prop.id)) s++;
+      for (const p of e.picks) if (lPlayers.has(p.prop.playerName)) s++;
       if (s > max) max = s;
     }
     return max;
@@ -577,6 +593,9 @@ export function buildAutoLineups(
   const cap = options.maxPoolSize ?? poolCapFor(lineupSize, lineupCount);
   const pool = leagueCapped.slice(0, cap);
   const poolProps = pool.map((c) => c.prop);
+  // The full pre-cap menu — a warming caller prices from this so pass-2 re-ranks
+  // on real data instead of being capped by the flat implied-board pre-filter.
+  const warmCandidates = leagueCapped.map((c) => c.prop);
 
   const realProjectionCount = real
     ? poolProps.filter((p) => real[p.id]?.available).length
@@ -585,6 +604,7 @@ export function buildAutoLineups(
   if (poolProps.length < lineupSize) {
     return {
       candidates: poolProps,
+      warmCandidates,
       lineups: [],
       poolSize: poolProps.length,
       totalEvaluated: 0,
@@ -621,6 +641,7 @@ export function buildAutoLineups(
 
   return {
     candidates: poolProps,
+    warmCandidates,
     lineups: picked,
     poolSize: poolProps.length,
     totalEvaluated: r.totalGenerated,

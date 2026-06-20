@@ -7,6 +7,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport, BLOCKED_SPORTS } from "./projectionCoverage";
 import { hasRealModel, IMPLIED_MODEL_VERSION } from "./projectionModel";
+import { SOCCER_LIVE } from "./sports/espnLiveProjection";
+import { buildResult } from "./realProjections";
 import { buildAutoLineups } from "./autoPilot";
 import { optimize, isUpcoming } from "./optimizer";
 import "./sports/registerAll";
@@ -28,13 +30,13 @@ function mkProp(over: Partial<Prop>): Prop {
 }
 
 describe("isLiveProjectionLeague — only inlined-model leagues are covered", () => {
-  it("covers NBA / WNBA / MLB / NHL / NFL and their segments", () => {
-    for (const l of ["NBA", "WNBA", "MLB", "NHL", "NFL", "nba", "NBA1Q", "WNBA1H", "WNBA1Q", "MLBLIVE", "NHL1P"]) {
+  it("covers NBA / WNBA / MLB / NHL / NFL / WORLD CUP and their segments", () => {
+    for (const l of ["NBA", "WNBA", "MLB", "NHL", "NFL", "WORLD CUP", "nba", "NBA1Q", "WNBA1H", "WNBA1Q", "MLBLIVE", "NHL1P"]) {
       assert.equal(isLiveProjectionLeague(l), true, `${l} should be covered`);
     }
   });
   it("rejects every league without a real projection model (incl. NFLSZN season totals)", () => {
-    for (const l of ["WORLD CUP", "BAD", "CS2", "TENNIS", "PGA", "LoL", "NPB", "COD", "F1", "NBA2K", "NFLSZN"]) {
+    for (const l of ["BAD", "CS2", "TENNIS", "PGA", "LoL", "NPB", "COD", "F1", "NBA2K", "NFLSZN"]) {
       assert.equal(isLiveProjectionLeague(l), false, `${l} must NOT be covered`);
     }
   });
@@ -43,19 +45,24 @@ describe("isLiveProjectionLeague — only inlined-model leagues are covered", ()
     assert.equal(isLiveProjectionLeague(""), false);
   });
   it("base-league list is exactly the genuinely-inlined sports", () => {
-    assert.deepEqual([...LIVE_PROJECTION_BASE_LEAGUES], ["NBA", "WNBA", "MLB", "NHL", "NFL"]);
+    assert.deepEqual([...LIVE_PROJECTION_BASE_LEAGUES], ["NBA", "WNBA", "MLB", "NHL", "NFL", "WORLD CUP"]);
   });
 
-  it("coverage list matches exactly the adapters flagged hasLiveProjection (no drift)", () => {
-    // The single source of truth: a league is gate-eligible iff its adapter
-    // declares hasLiveProjection. If someone genuinely inlines a sport and flips
-    // the flag, this fails until LIVE_PROJECTION_BASE_LEAGUES is updated too —
-    // and vice versa, so the gate can never silently include an un-inlined sport.
-    const flagged = allAdapters()
-      .filter((a) => a.hasLiveProjection)
-      .map((a) => a.displayName.toUpperCase())
-      .sort();
-    assert.deepEqual(flagged, [...LIVE_PROJECTION_BASE_LEAGUES].sort());
+  it("coverage list matches exactly the leagues served by hasLiveProjection adapters (no drift)", () => {
+    // The single source of truth: a base league is gate-eligible iff some adapter
+    // declaring hasLiveProjection actually serves it. (Matched by league, not by
+    // displayName, because one adapter can serve several leagues — the soccer
+    // adapter serves both "SOCCER" and the gate-eligible "WORLD CUP".) If someone
+    // inlines a sport and flips the flag, this fails until the league is added to
+    // LIVE_PROJECTION_BASE_LEAGUES too — and vice versa — so the gate can never
+    // silently include an un-inlined sport.
+    const base = new Set<string>(LIVE_PROJECTION_BASE_LEAGUES);
+    const served = new Set<string>();
+    for (const a of allAdapters()) {
+      if (!a.hasLiveProjection) continue;
+      for (const lg of a.leagues) if (base.has(lg.toUpperCase())) served.add(lg.toUpperCase());
+    }
+    assert.deepEqual([...served].sort(), [...LIVE_PROJECTION_BASE_LEAGUES].sort());
   });
 });
 
@@ -72,6 +79,55 @@ describe("isBlockedSport — hard no-bet list", () => {
   it("handles null/empty", () => {
     assert.equal(isBlockedSport(undefined), false);
     assert.equal(isBlockedSport(""), false);
+  });
+});
+
+describe("buildResult — certainty gate: no pick from a player who didn't play", () => {
+  it("excludes a player with all-zero recent games (likely did not play)", () => {
+    // Observed bug: Angus Gunn Goalie Saves [0,0,0,0,0,0,0,0,0,0] → projected 0 →
+    // clamped to a false 90% 'under'. No real activity = not certain = exclude.
+    const r = buildResult([0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 3.5, "test", "soccer-espn-live-v1");
+    assert.equal(r.available, false);
+  });
+  it("still prices a player with real activity (some zeros are fine)", () => {
+    const r = buildResult([1, 1, 0, 2, 5, 1, 0, 0, 2, 4], 3.5, "test", "soccer-espn-live-v1");
+    assert.equal(r.available, true);
+    if (r.available) assert.ok(r.projection > 0, "real recent saves → non-zero projection");
+  });
+  it("still enforces the minimum-games floor", () => {
+    assert.equal(buildResult([1, 2, 3], 1.5, "test", "v1").available, false);
+  });
+});
+
+describe("SOCCER_LIVE — World Cup stat mapping reads the real ESPN gamelog labels", () => {
+  // ESPN soccer/all gamelog labels (verified live against real players):
+  //   field player: G A SHOT SOG FC FA OF YC RC
+  //   goalkeeper:   CS SV GA G A FC FA YC RC
+  const field = { labels: ["G", "A", "SHOT", "SOG", "FC", "FA", "OF", "YC", "RC"], row: ["2", "1", "5", "3", "1", "2", "0", "1", "0"] };
+  const keeper = { labels: ["CS", "SV", "GA", "G", "A", "FC", "FA", "YC", "RC"], row: ["0", "4", "1", "0", "0", "0", "1", "0", "0"] };
+  const read = (stat: string, src: { labels: string[]; row: string[] }) =>
+    SOCCER_LIVE.stats[stat]?.(src.row, src.labels) ?? null;
+
+  it("maps field stats to the right columns", () => {
+    assert.equal(read("Goals", field), 2);
+    assert.equal(read("Assists", field), 1);
+    assert.equal(read("Shots", field), 5);
+    assert.equal(read("SOT", field), 3);
+    assert.equal(read("Shots on Target", field), 3);
+    assert.equal(read("Fouls Drawn", field), 2); // FA
+    assert.equal(read("Fouls Committed", field), 1); // FC
+    assert.equal(read("Goals+Assists", field), 3);
+  });
+  it("maps goalkeeper stats and yields null for absent columns (excluded, not faked)", () => {
+    assert.equal(read("Goalie Saves", keeper), 4);
+    assert.equal(read("Goals Allowed", keeper), 1);
+    // A keeper has no SHOT column → Shots is null → the no-mock gate drops it.
+    assert.equal(read("Shots", keeper), null);
+    // A field player has no SV column → Saves is null.
+    assert.equal(read("Saves", field), null);
+  });
+  it("uses a real (non-implied) modelVersion so picks pass the no-mock gate", () => {
+    assert.equal(hasRealModel(SOCCER_LIVE.modelVersion), true);
   });
 });
 
@@ -121,10 +177,10 @@ describe("hasRealModel — the implied placeholder is not a model", () => {
 });
 
 describe("buildAutoLineups — no mock picks", () => {
-  it("excludes uncovered-league props entirely (no World Cup / badminton picks)", () => {
+  it("excludes uncovered-league props entirely (no Tennis / badminton picks)", () => {
     const props: Prop[] = [
-      mkProp({ id: "wc1", sport: "WORLD CUP", league: "WORLD CUP", playerName: "Montes", team: "MEX", statType: "Passes Attempted", line: 70.5, modelVersion: IMPLIED_MODEL_VERSION }),
-      mkProp({ id: "wc2", sport: "WORLD CUP", league: "WORLD CUP", playerName: "Other", team: "USA", statType: "Passes Attempted", line: 60.5, modelVersion: IMPLIED_MODEL_VERSION }),
+      mkProp({ id: "tn1", sport: "TENNIS", league: "TENNIS", playerName: "Player A", team: "ESP", statType: "Aces", line: 7.5, modelVersion: IMPLIED_MODEL_VERSION }),
+      mkProp({ id: "tn2", sport: "TENNIS", league: "TENNIS", playerName: "Player B", team: "USA", statType: "Aces", line: 6.5, modelVersion: IMPLIED_MODEL_VERSION }),
       mkProp({ id: "bad1", sport: "BAD", league: "BAD", playerName: "Lin", team: "TPE", statType: "Total Points", line: 78.5, modelVersion: IMPLIED_MODEL_VERSION }),
     ];
     const r = buildAutoLineups(props, 2, 3, 5, { sport: "ALL" });
