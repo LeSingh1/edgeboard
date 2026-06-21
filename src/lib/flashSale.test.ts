@@ -19,7 +19,7 @@ function mkProp(over: Partial<Prop>): Prop {
   return {
     id: "x", source: "prizepicks", sport: "NBA", league: "NBA",
     playerName: "Test Player", team: "AAA", opponent: "BBB",
-    gameTime: "2099-06-11T23:00:00Z", statType: "Points", line: 20.5, // far-future: game-started filter keeps it
+    gameTime: new Date(Date.now() + 36 * 3600 * 1000).toISOString(), statType: "Points", line: 20.5, // ~1.5 days out: upcoming + within bet horizon
     status: "active", oddsType: "standard", pMore: 0.5, pLess: 0.5,
     modelVersion: "nba-espn-v1+iso",
     ...over,

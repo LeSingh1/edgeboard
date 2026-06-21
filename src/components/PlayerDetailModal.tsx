@@ -162,6 +162,9 @@ export function PlayerDetailModal({
   // state guards SSR — document is undefined on the server.
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
+    // Canonical SSR mount guard — flips once on mount so the body portal only
+    // renders client-side. Not a cascading render (empty deps, runs once).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
   if (!mounted) return null;
@@ -524,8 +527,10 @@ export function PlayerDetailModal({
                     </div>
                     <p className="text-white/45 text-xs mt-3 max-w-md mx-auto leading-relaxed">
                       We&apos;re still fetching this player&apos;s recent games — usually a few
-                      seconds. If this stays empty, the {prop.sport} stat type doesn&apos;t have a
-                      gamelog source plumbed in yet (only NBA / WNBA / MLB do).
+                      seconds. If it stays empty, we don&apos;t have a data source for{" "}
+                      <span className="text-white/70 font-semibold">{prop.statType}</span> yet —
+                      some stats (passing, crosses, tackles) aren&apos;t in our feeds, so we leave
+                      them out rather than guess.
                     </p>
                   </motion.div>
                 )}

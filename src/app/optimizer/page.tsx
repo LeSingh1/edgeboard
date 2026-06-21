@@ -236,7 +236,9 @@ export default function OptimizerPage() {
   // Auto entry-cost: keep `entry` in sync with the budget while auto mode is on.
   useEffect(() => {
     if (autoEntry) {
-      setEntry(niceEntry(budget / AUTO_TARGET_LINEUPS));
+      // Defer out of the render phase (same pattern as the size-normalization
+      // effect above) so the setState can't trigger a cascading render.
+      queueMicrotask(() => setEntry(niceEntry(budget / AUTO_TARGET_LINEUPS)));
     }
   }, [autoEntry, budget]);
 

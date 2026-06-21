@@ -134,15 +134,18 @@ export function buildResult(values: number[], line: number, source: string, mode
   if (values.length < 5) {
     return { available: false, reason: `Only ${values.length} games — need at least 5` };
   }
-  // Certainty gate: a player with NO recorded activity in this stat across every
-  // recent game (all zeros) almost always means they did NOT play those games — a
-  // benched keeper, an inactive sub. The model would otherwise project ~0 and clamp
-  // to a false ~90% "under", a confident-looking pick built on nothing (observed:
-  // Angus Gunn Goalie Saves, 10 straight 0s → "90% under 3.5"). We are not certain
-  // here, so exclude it — the no-mock gate drops it rather than surfacing a guess.
-  const activeGames = values.filter((v) => v !== 0).length;
-  if (activeGames === 0) {
-    return { available: false, reason: "No recorded activity in recent games — likely did not play" };
+  // Certainty gate (recent inactivity): all-zero in the MOST RECENT games means
+  // the player isn't currently in the lineup — a benched keeper, an injured/rotated
+  // starter. Older games would otherwise project a stale, falsely-confident line.
+  // Observed twice: Angus Gunn (whole history 0 → "90% under 3.5") and Max Crocombe
+  // (last 10 saves all 0 but proj 1.17 from older matches → fake "88% under 3.5").
+  // Checking the recent window catches both: the projection is only as trustworthy
+  // as the player's current activity, so no recent activity = not certain he plays
+  // = exclude (the no-mock gate drops it rather than surfacing a guess).
+  // `values` is chronological (oldest → newest), so the tail is the recent form.
+  const recentWindow = values.slice(-Math.min(5, values.length));
+  if (recentWindow.every((v) => v === 0)) {
+    return { available: false, reason: "No activity in recent games — likely not in the lineup" };
   }
   const { mean: equalMean, std } = meanStd(values);
   // Base mean = blend of the equal-weighted mean and a recency-weighted mean.

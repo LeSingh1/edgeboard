@@ -23,7 +23,7 @@
  */
 
 import { groupByFamily, familyKeyOf, type VariantSet } from "@/lib/variantGroups";
-import { optimize, isUpcoming } from "@/lib/optimizer";
+import { optimize, isUpcoming, withinBetHorizon } from "@/lib/optimizer";
 import { isLiveProjectionLeague, isBlockedSport } from "@/lib/projectionCoverage";
 import type { Lineup, PickSide, Prop } from "@/lib/types";
 import type { ProjectionResult } from "@/lib/realProjections";
@@ -492,6 +492,9 @@ export function buildAutoLineups(
     // snapshot (PrizePicks blocks server fetches) keeps finished games frozen
     // as pre_game; this is what makes picks look "off" the morning after.
     if (requireRealModel && !isUpcoming(p, now)) continue;
+    // Betting-horizon limit: don't recommend a game more than 3 days out — it
+    // locks the entry up far longer for the same payout. Applied unconditionally.
+    if (!withinBetHorizon(p, now)) continue;
     if ((options.excludeLive ?? true) && p.isLive) continue;
     if ((options.excludeCombo ?? true) && p.isCombo) continue;
     // Team allowlist (e.g. "alive playoff teams only"). Empty set = no filter.

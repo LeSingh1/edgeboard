@@ -208,7 +208,14 @@ export default function LiveBoardPage() {
       // discounted line + badge show; otherwise dedupe to the primary variant.
       collected.push(flashOnly ? p : vs ? (primaryVariant(vs) ?? p) : p);
     }
+    const isFlash = (p: Prop) => p.flashSaleLine != null && p.flashSaleLine !== p.line;
     return [...collected].sort((a, b) => {
+      // Flash sales are pinned to the TOP of the board — every sport, every sort.
+      // A discounted line at full payout is the highest-value thing on the board,
+      // so it should never be buried below time/line ordering.
+      const fa = isFlash(a) ? 0 : 1;
+      const fb = isFlash(b) ? 0 : 1;
+      if (fa !== fb) return fa - fb;
       if (sort === "line") return (b.line ?? 0) - (a.line ?? 0);
       if (sort === "demons") {
         // For each family, surface those with a demon variant available first

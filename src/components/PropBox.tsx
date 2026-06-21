@@ -92,6 +92,10 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
     prop;
   const selected = familySelection?.activePropId === activeProp.id ? familySelection.side : null;
   const hasMultipleVariants = variantCount(variants ?? {}) > 1;
+  // Flash sale: PrizePicks dropped the line in your favor at full payout — the
+  // highest-value pick on the board, so the card gets a glow + ribbon.
+  const isFlash = activeProp.flashSaleLine != null && activeProp.flashSaleLine !== activeProp.line;
+  const flashPct = isFlash ? Math.round((1 - (activeProp.flashSaleLine as number) / activeProp.line) * 100) : 0;
 
   // ── Ladder rungs of the same odds type ────────────────────────────────
   // PrizePicks frequently ships multiple demon (or goblin) lines in one
@@ -235,12 +239,22 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
           selected && "ring-4 ring-offset-2 ring-offset-[#0D0D1A]",
         )}
         style={{
-          borderColor: accent,
+          borderColor: isFlash ? "#FFE600" : accent,
           borderStyle,
+          // A flash sale gets a yellow glow so it reads as special at a glance.
+          ...(isFlash ? { boxShadow: "0 0 0 2px #FFE600, 0 0 28px rgba(255,230,0,0.45)" } : {}),
           // @ts-expect-error CSS custom property
           "--tw-ring-color": accent,
         }}
       >
+        {/* Flash-sale ribbon — full-width strip pinned to the very top of the card. */}
+        {isFlash && (
+          <div className="relative z-10 flex items-center justify-center gap-1 bg-[#FFE600] text-[#0D0D1A] py-0.5 font-[family-name:var(--font-heading)] font-black uppercase text-[10px] tracking-[0.2em]">
+            <Zap size={11} strokeWidth={3} aria-hidden fill="#0D0D1A" />
+            Flash Sale{flashPct > 0 ? ` · ${flashPct}% off` : ""}
+          </div>
+        )}
+
         {/* Selected sparkle */}
         {selected && (
           <motion.div

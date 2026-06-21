@@ -41,7 +41,7 @@ function mkProp(over: Partial<Prop>): Prop {
     playerName: "Test Player",
     team: "AAA",
     opponent: "BBB",
-    gameTime: "2099-06-06T23:00:00Z", // far-future so the game-started filter keeps the fixture
+    gameTime: new Date(Date.now() + 36 * 3600 * 1000).toISOString(), // ~1.5 days out: upcoming AND within the 3-day bet horizon
     statType: "Points",
     line: 20.5,
     status: "active",

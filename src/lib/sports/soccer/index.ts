@@ -12,11 +12,15 @@ export const soccerAdapter: SportAdapter = {
   supportedStats: ["Goals","Assists","Shots","Shots on Target","SOT","Fouls Committed","Fouls","Fouls Suffered","Goals+Assists","Goal + Assist","Saves","Goalie Saves","Goals Allowed"],
   fetchPlayerRoster, fetchPlayerGamelog, fetchTeamSchedule,
   extractStat: soccerExtractStat,
-  // Real game-log projection (ESPN soccer/all). Field scoring + goalie stats
-  // resolve; passing/touches aren't in the gamelog → unavailable → excluded by
-  // the no-mock gate, never the implied placeholder.
-  project: async (prop) => {
+  // Real game-log projection (ESPN soccer/all), then gated + calibrated against
+  // the TRAINED soccer model: a World Cup prop only bets when the trained model
+  // has a calibration bucket for its stat|oddsType (Goals/Assists/Fouls/Saves/
+  // Goals Allowed, standard only). Untrained stats (Shots, SOT) and untrained
+  // rungs (goblin/demon) are excluded — "if it isn't trained, don't bet on it".
+  project: async (prop, artifacts) => {
     const { soccerLiveProjection } = await import("@/lib/sports/espnLiveProjection");
-    return soccerLiveProjection(prop);
+    const { calibrateSoccer } = await import("./calibrate");
+    const raw = await soccerLiveProjection(prop);
+    return calibrateSoccer(raw, prop, artifacts);
   },
 };

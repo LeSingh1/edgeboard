@@ -5,12 +5,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport, BLOCKED_SPORTS } from "./projectionCoverage";
+import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport } from "./projectionCoverage";
 import { hasRealModel, IMPLIED_MODEL_VERSION } from "./projectionModel";
 import { SOCCER_LIVE } from "./sports/espnLiveProjection";
 import { buildResult } from "./realProjections";
+import { calibrateSoccer } from "./sports/soccer/calibrate";
+import type { SportArtifacts } from "./sports/types";
 import { buildAutoLineups } from "./autoPilot";
-import { optimize, isUpcoming } from "./optimizer";
+import { optimize, isUpcoming, withinBetHorizon } from "./optimizer";
 import "./sports/registerAll";
 import { allAdapters } from "./sports/registry";
 import type { Prop } from "./types";
@@ -22,7 +24,7 @@ function mkProp(over: Partial<Prop>): Prop {
   return {
     id: "x", source: "prizepicks", sport: "NBA", league: "NBA",
     playerName: "Test Player", team: "AAA", opponent: "BBB",
-    gameTime: "2099-06-11T23:00:00Z", statType: "Points", line: 20.5, // far-future: game-started filter keeps it
+    gameTime: new Date(Date.now() + 36 * 3600 * 1000).toISOString(), statType: "Points", line: 20.5, // ~1.5 days out: upcoming + within bet horizon
     status: "active", oddsType: "standard", pMore: 0.5, pLess: 0.5,
     modelVersion: "nba-espn-v1+iso", // real by default
     ...over,
@@ -89,13 +91,50 @@ describe("buildResult — certainty gate: no pick from a player who didn't play"
     const r = buildResult([0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 3.5, "test", "soccer-espn-live-v1");
     assert.equal(r.available, false);
   });
-  it("still prices a player with real activity (some zeros are fine)", () => {
-    const r = buildResult([1, 1, 0, 2, 5, 1, 0, 0, 2, 4], 3.5, "test", "soccer-espn-live-v1");
+  it("excludes a player active earlier but zero in recent games (stale projection)", () => {
+    // Observed bug: Max Crocombe Goalie Saves [.., 0,0,0,0,0,0,0,0,0,0] — older
+    // games projected 1.17 but the last games are all 0 (not in the lineup), which
+    // made a false "88% under 3.5". Recent inactivity must exclude regardless of
+    // older activity.
+    const r = buildResult([4, 3, 5, 2, 4, 0, 0, 0, 0, 0], 3.5, "test", "soccer-espn-live-v1");
+    assert.equal(r.available, false);
+  });
+  it("still prices a player with current activity (older zeros are fine)", () => {
+    const r = buildResult([0, 0, 1, 1, 0, 2, 5, 1, 2, 4], 3.5, "test", "soccer-espn-live-v1");
     assert.equal(r.available, true);
     if (r.available) assert.ok(r.projection > 0, "real recent saves → non-zero projection");
   });
   it("still enforces the minimum-games floor", () => {
     assert.equal(buildResult([1, 2, 3], 1.5, "test", "v1").available, false);
+  });
+});
+
+describe("calibrateSoccer — World Cup bets ONLY what the trained model covers", () => {
+  // Trained soccer model covers Goals/Assists/Fouls/Saves/Goals Allowed, standard
+  // only — NOT Shots/SOT, and no goblin/demon. "If it isn't trained, don't bet."
+  const arts = {
+    calibration: { buckets: { "Goals|standard": { x: [0.05, 0.5, 0.95], y: [0.08, 0.45, 0.9], sampleSize: 1000 } } },
+  } as unknown as SportArtifacts;
+  const raw: ProjectionResult = {
+    available: true, pMore: 0.6, pLess: 0.4, projection: 1, sigma: 1,
+    sampleSize: 10, recent: [1, 0, 2, 1, 0], source: "test", modelVersion: "soccer-espn-live-v1",
+  };
+  it("excludes an untrained stat (Shots / SOT have no bucket)", () => {
+    assert.equal(calibrateSoccer(raw, mkProp({ statType: "Shots", oddsType: "standard" }), arts).available, false);
+    assert.equal(calibrateSoccer(raw, mkProp({ statType: "SOT", oddsType: "standard" }), arts).available, false);
+  });
+  it("excludes an untrained rung (only standard is trained)", () => {
+    assert.equal(calibrateSoccer(raw, mkProp({ statType: "Goals", oddsType: "demon" }), arts).available, false);
+    assert.equal(calibrateSoccer(raw, mkProp({ statType: "Goals", oddsType: "goblin" }), arts).available, false);
+  });
+  it("prices a trained standard stat with the trained-v2 calibration applied", () => {
+    const r = calibrateSoccer(raw, mkProp({ statType: "Goals", oddsType: "standard" }), arts);
+    assert.equal(r.available, true);
+    if (r.available) assert.equal(r.modelVersion, "soccer-trained-v2");
+  });
+  it("excludes everything when the trained model isn't loaded", () => {
+    const r = calibrateSoccer(raw, mkProp({ statType: "Goals", oddsType: "standard" }), { calibration: null } as unknown as SportArtifacts);
+    assert.equal(r.available, false);
   });
 });
 
@@ -235,6 +274,35 @@ describe("optimize — no mock slips", () => {
     ];
     const { lineups } = optimize({ selectedProps: props, lineupSize: 2, entryCost: 10, riskMode: "safe" });
     assert.equal(lineups.length, 0);
+  });
+});
+
+describe("betting-horizon filter — no picks on games more than 3 days out", () => {
+  const NOW = Date.parse("2026-06-13T18:00:00Z");
+  const at = (iso: string, id = "x") => mkProp({ id, gameTime: iso });
+
+  it("withinBetHorizon: within 3 days → true, beyond → false, bad/missing → true", () => {
+    assert.equal(withinBetHorizon(at("2026-06-14T18:00:00Z"), NOW), true); // +1 day
+    assert.equal(withinBetHorizon(at("2026-06-16T17:00:00Z"), NOW), true); // +2.96 days
+    assert.equal(withinBetHorizon(at("2026-06-16T19:00:00Z"), NOW), false); // +3.04 days
+    assert.equal(withinBetHorizon(at("2026-06-20T18:00:00Z"), NOW), false); // +7 days
+    assert.equal(withinBetHorizon(mkProp({ gameTime: "" }), NOW), true); // unknown → kept
+  });
+
+  it("buildAutoLineups drops a game more than 3 days out, keeps a near one", () => {
+    const real = {
+      soon1: proj({ available: true, pMore: 0.7, pLess: 0.3, projection: 13, sigma: 3, recent: [11, 12, 13, 14, 12] }),
+      soon2: proj({ available: true, pMore: 0.7, pLess: 0.3, projection: 8, sigma: 2, recent: [7, 8, 9, 7, 8] }),
+      far1: proj({ available: true, pMore: 0.9, pLess: 0.1, projection: 9, sigma: 2, recent: [8, 9, 10, 9, 8] }),
+    };
+    const props = [
+      mkProp({ id: "soon1", playerName: "Soon A", team: "AAA", statType: "Points", line: 10.5, gameTime: "2026-06-14T23:00:00Z" }),
+      mkProp({ id: "soon2", playerName: "Soon B", team: "BBB", statType: "Rebounds", line: 6.5, gameTime: "2026-06-14T23:00:00Z" }),
+      mkProp({ id: "far1", playerName: "Far Away", team: "CCC", statType: "Assists", line: 4.5, gameTime: "2026-06-19T23:00:00Z" }),
+    ];
+    const r = buildAutoLineups(props, 2, 3, 5, { sport: "ALL", realProjections: real, now: NOW });
+    const ids = new Set(r.lineups.flatMap((l) => l.picks.map((p) => p.prop.id)));
+    assert.equal(ids.has("far1"), false, "a game 6 days out must never be a pick");
   });
 });
 

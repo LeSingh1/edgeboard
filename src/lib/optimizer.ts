@@ -462,6 +462,24 @@ export function isUpcoming(prop: Prop, now: number = Date.now()): boolean {
   return Number.isNaN(t) || t > now;
 }
 
+/** How many days out a game can be and still be worth recommending. A game 4+
+ *  days away locks the entry up far longer for the same payout, so we don't
+ *  surface it. */
+export const MAX_BET_HORIZON_DAYS = 3;
+
+/** True iff the game is within the betting horizon — i.e. NOT more than
+ *  `maxDays` in the future. Missing/invalid game times are kept (we can't tell,
+ *  same lenient handling as `isUpcoming`). */
+export function withinBetHorizon(
+  prop: Prop,
+  now: number = Date.now(),
+  maxDays: number = MAX_BET_HORIZON_DAYS,
+): boolean {
+  const t = Date.parse(prop.gameTime);
+  if (Number.isNaN(t)) return true;
+  return t <= now + maxDays * 24 * 60 * 60 * 1000;
+}
+
 export interface FilterOptions {
   minHitProb?: number;   // 0..1
   minEv?: number;        // absolute dollar EV
@@ -584,10 +602,12 @@ export function optimize({
   // (SmartSuggest, BestSingleSlip, the optimizer page).
   // Hard no-bet block applied unconditionally: BLOCKED_SPORTS are excluded even
   // when requireRealModel is false (e.g. buildAutoLineups diagnostic mode).
+  // Horizon limit applied unconditionally too: never recommend a game more than
+  // MAX_BET_HORIZON_DAYS out, regardless of requireRealModel.
   const selectedProps = (requireRealModel
     ? rawSelectedProps.filter((p) => hasRealModel(p.modelVersion) && isUpcoming(p, now))
     : rawSelectedProps
-  ).filter((p) => !isBlockedSport(p.sport));
+  ).filter((p) => !isBlockedSport(p.sport) && withinBetHorizon(p, now));
   const lineups: Lineup[] = [];
   let counter = 0;
 

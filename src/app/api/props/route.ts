@@ -52,7 +52,12 @@ async function fetchPP(): Promise<Response> {
     if (delay) await new Promise((r) => setTimeout(r, delay));
     const res = await fetch(PRIZEPICKS_URL, {
       headers: browserHeaders(),
-      next: { revalidate: 300 },
+      // The PrizePicks board is ~18-21MB — far over Next's 2MB data-cache limit,
+      // so a cached fetch logged "items over 2MB can not be cached" on every call.
+      // Skip the fetch-level cache; this route's own ISR (`export const revalidate
+      // = 300`) and `s-maxage=300` response headers handle caching at the route
+      // layer instead.
+      cache: "no-store",
     });
     if (res.ok) return res;
     last = res;
