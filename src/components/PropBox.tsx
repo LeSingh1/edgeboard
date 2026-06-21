@@ -96,6 +96,9 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
   // highest-value pick on the board, so the card gets a glow + ribbon.
   const isFlash = activeProp.flashSaleLine != null && activeProp.flashSaleLine !== activeProp.line;
   const flashPct = isFlash ? Math.round((1 - (activeProp.flashSaleLine as number) / activeProp.line) * 100) : 0;
+  // The line you ACTUALLY bet: a flash sale replaces the standard line with the
+  // discounted one, so that's what the card must show (e.g. 17.5, not 25.5).
+  const displayLine = isFlash ? (activeProp.flashSaleLine as number) : activeProp.line;
 
   // ── Ladder rungs of the same odds type ────────────────────────────────
   // PrizePicks frequently ships multiple demon (or goblin) lines in one
@@ -455,10 +458,10 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
                 }}
                 className="font-[family-name:var(--font-display)] leading-none cursor-pointer focus:outline-none rounded-md px-1 transition-colors hover:bg-white/5"
                 style={{ color: accent3, fontSize: "2.5rem" }}
-                aria-label={`Line ${activeProp.line}. ${sameTypeRungs.length} ${rungTypePlural} in this ladder. Tap to cycle to ${nextRung.line}.`}
+                aria-label={`Line ${displayLine}. ${sameTypeRungs.length} ${rungTypePlural} in this ladder. Tap to cycle to ${nextRung.line}.`}
                 title={`Tap to cycle → ${nextRung.line} (next ${activeProp.oddsType})`}
               >
-                {activeProp.line}
+                {displayLine}
               </motion.button>
             ) : (
               <motion.div
@@ -469,8 +472,14 @@ export function PropBox({ prop, index, liveStat, variants, liveStatFor }: PropBo
                 className="font-[family-name:var(--font-display)] leading-none"
                 style={{ color: accent3, fontSize: "2.5rem" }}
               >
-                {activeProp.line}
+                {displayLine}
               </motion.div>
+            )}
+            {/* Flash sale: show the original line struck through so the discount is clear. */}
+            {isFlash && (
+              <div className="text-[11px] font-bold text-white/40 line-through leading-none mt-0.5">
+                {activeProp.line}
+              </div>
             )}
             <div className="font-[family-name:var(--font-heading)] font-black uppercase text-xs tracking-widest text-white">
               {activeProp.statType}

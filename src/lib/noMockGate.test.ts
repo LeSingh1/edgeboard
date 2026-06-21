@@ -99,6 +99,13 @@ describe("buildResult — certainty gate: no pick from a player who didn't play"
     const r = buildResult([4, 3, 5, 2, 4, 0, 0, 0, 0, 0], 3.5, "test", "soccer-espn-live-v1");
     assert.equal(r.available, false);
   });
+  it("excludes a backup/rotation player with too few active games (DNP-polluted)", () => {
+    // Observed bug: Ørjan Nyland Goalie Saves [0,0,0,0,0,0,0,0,0,2] → proj 0.25 →
+    // a fake "91% under 2.5". One active game in ten = he barely plays; the zeros
+    // are DNPs, not a real low-save rate. Not certain he plays = exclude.
+    const r = buildResult([0, 0, 0, 0, 0, 0, 0, 0, 0, 2], 2.5, "test", "soccer-espn-live-v1");
+    assert.equal(r.available, false);
+  });
   it("still prices a player with current activity (older zeros are fine)", () => {
     const r = buildResult([0, 0, 1, 1, 0, 2, 5, 1, 2, 4], 3.5, "test", "soccer-espn-live-v1");
     assert.equal(r.available, true);

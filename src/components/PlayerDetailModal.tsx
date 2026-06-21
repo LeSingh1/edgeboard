@@ -92,8 +92,12 @@ export function PlayerDetailModal({
     projection && projection.available && projection.recentMeta
       ? projection.recentMeta
       : [];
+  // The line actually in play — a flash sale discounts it (e.g. 25.5 → 17.5), so
+  // the displayed number AND the gamelog hit-line must use the discounted value.
+  const effLine =
+    prop.flashSaleLine != null && prop.flashSaleLine !== prop.line ? prop.flashSaleLine : prop.line;
   const projectionMean =
-    projection && projection.available ? projection.projection : prop.line;
+    projection && projection.available ? projection.projection : effLine;
   // Last 5 games, chronological left→right so the most recent reads on the
   // right (the convention PrizePicks uses).
   const last5 = recent.slice(-5);
@@ -120,7 +124,7 @@ export function PlayerDetailModal({
 
   // Bar chart geometry — chartMax pads above the highest value so the tallest
   // bar doesn't clip the projection line.
-  const chartMax = Math.max(...last5, prop.line, projectionMean) * 1.15 || 10;
+  const chartMax = Math.max(...last5, effLine, projectionMean) * 1.15 || 10;
   // Y-axis tick values for the gridlines + axis labels (nice whole numbers).
   const tick3 = Math.round(chartMax);
   const tick2 = Math.round(chartMax * 0.66);
@@ -288,8 +292,13 @@ export function PlayerDetailModal({
                   >
                     <div className="text-center pb-4 border-b border-white/10">
                       <div className="font-[family-name:var(--font-display)] text-5xl md:text-6xl leading-none text-white">
-                        {prop.line}
+                        {effLine}
                       </div>
+                      {effLine !== prop.line && (
+                        <div className="text-[12px] font-bold text-[#FFE600] mt-1">
+                          <span className="text-white/40 line-through">{prop.line}</span> · flash sale
+                        </div>
+                      )}
                       <div className="text-white/60 text-[11px] uppercase tracking-widest font-bold mt-2">
                         {prop.statType}
                       </div>
@@ -385,7 +394,7 @@ export function PlayerDetailModal({
                         <div className="absolute left-8 right-0 bottom-0 top-0 flex items-end gap-3 md:gap-5 px-1">
                           {last5.map((value, i) => {
                             const heightPct = Math.max(2, (value / chartMax) * 100);
-                            const hitsLine = value >= prop.line;
+                            const hitsLine = value >= effLine;
                             return (
                               <div key={i} className="relative flex-1 flex flex-col items-center justify-end h-full">
                                 <motion.span
@@ -466,7 +475,7 @@ export function PlayerDetailModal({
                       </div>
                       <div className="divide-y divide-white/5">
                         {[...last5].reverse().map((value, i) => {
-                          const hits = value >= prop.line;
+                          const hits = value >= effLine;
                           // Last5 is oldest→newest, so reversed gives
                           // newest at the top. last5Meta is also oldest→newest.
                           const reverseIdx = last5.length - 1 - i;
