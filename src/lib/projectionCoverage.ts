@@ -67,3 +67,26 @@ export function isBlockedSport(sport?: string | null): boolean {
   if (!sport) return false;
   return BLOCKED_SPORTS.has(sport.trim().toUpperCase());
 }
+
+/**
+ * Max age of a sport's trained model before its picks are considered unreliable.
+ * The daily training cycle refits every sport nightly, so a model older than this
+ * means training has been FAILING — the model is missing recent games and its
+ * probabilities are stale. Better to surface no pick than one priced on a stale
+ * model (observed: the soccer/World Cup crawl stuck 10+ days, still serving picks).
+ */
+export const MAX_MODEL_AGE_DAYS = 4;
+
+/** True iff a model trained at `trainedAt` is older than `maxDays` — i.e. stale
+ *  enough that its picks shouldn't be bet until it retrains. Unknown/invalid
+ *  timestamps are treated as NOT stale (don't block on missing metadata). */
+export function isModelStale(
+  trainedAt?: string | null,
+  now: number = Date.now(),
+  maxDays: number = MAX_MODEL_AGE_DAYS,
+): boolean {
+  if (!trainedAt) return false;
+  const t = Date.parse(trainedAt);
+  if (Number.isNaN(t)) return false;
+  return (now - t) / 86_400_000 > maxDays;
+}

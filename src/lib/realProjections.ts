@@ -1248,7 +1248,17 @@ export async function projectionFor(prop: Prop): Promise<ProjectionResult> {
   let result: ProjectionResult;
   if (adapter) {
     const artifacts = await loadArtifactsForSport(adapter.leagues[0].toLowerCase());
-    result = await adapter.project(prop, artifacts);
+    const { isModelStale } = await import("@/lib/projectionCoverage");
+    // Staleness gate: a model the nightly cycle hasn't refit in days is missing
+    // recent games — its picks aren't accurate, so exclude them until it retrains.
+    // (Observed: the soccer/World Cup crawl stuck 10+ days while still serving
+    // picks.) Auto-clears the moment the model retrains.
+    if (isModelStale(artifacts.metadata?.trainedAt)) {
+      const days = Math.round((Date.now() - Date.parse(artifacts.metadata.trainedAt)) / 86_400_000);
+      result = { available: false, reason: `${prop.sport} model is ${days} days stale — excluded until it retrains` };
+    } else {
+      result = await adapter.project(prop, artifacts);
+    }
   } else {
     result = {
       available: false,

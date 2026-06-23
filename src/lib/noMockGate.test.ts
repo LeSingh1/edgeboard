@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport } from "./projectionCoverage";
+import { isLiveProjectionLeague, LIVE_PROJECTION_BASE_LEAGUES, isBlockedSport, isModelStale, MAX_MODEL_AGE_DAYS } from "./projectionCoverage";
 import { hasRealModel, IMPLIED_MODEL_VERSION } from "./projectionModel";
 import { SOCCER_LIVE } from "./sports/espnLiveProjection";
 import { buildResult } from "./realProjections";
@@ -81,6 +81,24 @@ describe("isBlockedSport — hard no-bet list", () => {
   it("handles null/empty", () => {
     assert.equal(isBlockedSport(undefined), false);
     assert.equal(isBlockedSport(""), false);
+  });
+});
+
+describe("isModelStale — stale models don't get bet (World Cup wrong-picks fix)", () => {
+  const NOW = Date.parse("2026-06-22T20:00:00Z");
+  it("flags a model older than the max age (soccer at ~11 days)", () => {
+    assert.equal(isModelStale("2026-06-12T07:10:00Z", NOW), true);
+  });
+  it("passes a fresh model (retrained today)", () => {
+    assert.equal(isModelStale("2026-06-22T14:32:00Z", NOW), false);
+  });
+  it("does not block on missing/invalid timestamps", () => {
+    assert.equal(isModelStale(undefined, NOW), false);
+    assert.equal(isModelStale("", NOW), false);
+    assert.equal(isModelStale("not-a-date", NOW), false);
+  });
+  it("uses a sane default threshold (a few days, not hours)", () => {
+    assert.ok(MAX_MODEL_AGE_DAYS >= 2 && MAX_MODEL_AGE_DAYS <= 10);
   });
 });
 
