@@ -2,7 +2,13 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const COMPETITIONS = ["eng.1", "usa.1", "mex.1", "uefa.champions", "uefa.europa"];
+// `fifa.world` (the World Cup) is FIRST so it's crawled before the per-player
+// cap stops the loop — the model was stuck on a June-12 champion because the
+// training set had ONLY club leagues and no World Cup matches, so every nightly
+// challenger trained on identical (season-ended) club data and lost the
+// champion-challenger gate by ~1%. Folding in live World Cup games gives the
+// model fresh, on-tournament data so it can actually refresh and deploy.
+const COMPETITIONS = ["fifa.world", "eng.1", "usa.1", "mex.1", "uefa.champions", "uefa.europa"];
 
 // In-memory cache built during fetchPlayerRoster, consumed by fetchPlayerGamelog.
 const gamelogCache = new Map<string, RawGame[]>();

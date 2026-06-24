@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { soccerExtractStat } from "./extract";
 import type { RawGame } from "@/lib/sports/types";
 
-const field: RawGame = { eventId: "e", gameDate: "2026-09-15", stats: { G: 1, A: 1, SH: 4, ST: 2, FC: 2, FA: 1, type: "field" } };
+const field: RawGame = { eventId: "e", gameDate: "2026-09-15", stats: { G: 1, A: 1, SHOT: 4, SOG: 2, FC: 2, FA: 1, type: "field" } };
 const gk: RawGame = { eventId: "e", gameDate: "2026-09-15", stats: { SV: 5, GA: 1, type: "goalkeeper" } };
 
 describe("soccerExtractStat", () => {

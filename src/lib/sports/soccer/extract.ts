@@ -10,8 +10,10 @@ export function soccerExtractStat(game: RawGame, statType: string): number | nul
   if (role === "field") {
     if (statType === "Goals") return n(game, "G");
     if (statType === "Assists") return n(game, "A");
-    if (statType === "Shots") return n(game, "SH");
-    if (statType === "Shots on Target" || statType === "SOT") return n(game, "ST");
+    // ESPN's soccer summary uses SHOT / SOG (not SH / ST) — the old keys never
+    // matched, which is why Shots & SOT were never trained for soccer.
+    if (statType === "Shots") return n(game, "SHOT");
+    if (statType === "Shots on Target" || statType === "SOT") return n(game, "SOG");
     if (statType === "Fouls Committed" || statType === "Fouls") return n(game, "FC");
     if (statType === "Fouls Suffered") return n(game, "FA");
     if (statType === "Goals+Assists" || statType === "Goal + Assist") {
