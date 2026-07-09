@@ -1,5 +1,6 @@
 // src/lib/sports/soccer/fetch.ts
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 // `fifa.world` (the World Cup) is FIRST so it's crawled before the per-player
@@ -18,7 +19,7 @@ export async function fetchTeamSchedule(teamSlug: string, season: number): Promi
   const ids = new Set<string>();
   const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${competition}/teams/${team}/schedule?season=${season}`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
     const body = await res.json() as { events?: Array<{ id?: string }> };
     for (const e of body.events ?? []) if (e.id) ids.add(e.id);
@@ -29,7 +30,7 @@ export async function fetchTeamSchedule(teamSlug: string, season: number): Promi
 async function fetchTeamsInCompetition(competition: string): Promise<string[]> {
   const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${competition}/teams`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
     const body = await res.json() as { sports?: Array<{ leagues?: Array<{ teams?: Array<{ team?: { id?: string } }> }> }> };
     const out: string[] = [];
@@ -69,7 +70,7 @@ async function fetchEventPlayerStats(
   const players: PlayerRef[] = [];
   const games = new Map<string, RawGame>();
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return { players, games };
     const body = await res.json() as { rosters?: SummaryRoster[] };
     for (const tm of body.rosters ?? []) {
@@ -118,7 +119,7 @@ export async function fetchPlayerRoster(): Promise<PlayerRef[]> {
           let gameDate = "";
           try {
             const schedUrl = `https://site.api.espn.com/apis/site/v2/sports/soccer/${competition}/scoreboard/${eventId}`;
-            const sRes = await fetch(schedUrl, { headers: { "User-Agent": UA } });
+            const sRes = await fetchWithTimeout(schedUrl, { headers: { "User-Agent": UA } });
             if (sRes.ok) {
               const sData = await sRes.json() as { competitions?: Array<{ date?: string }> };
               gameDate = sData.competitions?.[0]?.date ?? "";

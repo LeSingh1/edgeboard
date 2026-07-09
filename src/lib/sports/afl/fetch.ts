@@ -1,4 +1,5 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const AFL_TEAMS = [
@@ -13,7 +14,7 @@ export async function fetchTeamSchedule(teamId: string, season: number): Promise
   const ids = new Set<string>();
   const url = `https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/teams/${teamId}/schedule?season=${season}`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
     const body = await res.json() as { events?: Array<{ id?: string }> };
     for (const e of body.events ?? []) if (e.id) ids.add(e.id);
@@ -37,7 +38,7 @@ async function fetchEventPlayerStats(eventId: string): Promise<{ players: Player
   const players: PlayerRef[] = [];
   const games = new Map<string, RawGame>();
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return { players, games };
     const body = await res.json() as {
       boxscore?: { players?: BoxscorePlayer[] };

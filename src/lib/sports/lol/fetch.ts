@@ -1,4 +1,5 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 // Leaguepedia (Fandom) Cargo API. Their policy asks for a descriptive
 // User-Agent with contact info; shared/cloud IPs get rate-limited, so the
@@ -59,7 +60,7 @@ async function fetchPage(offset: number, attempts = 6): Promise<CargoRow[]> {
   });
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(`${API}?${params}`, { headers: { "User-Agent": UA } });
+      const res = await fetchWithTimeout(`${API}?${params}`, { headers: { "User-Agent": UA } });
       if (!res.ok) { await sleep(Math.min(60000, 4000 * 2 ** i)); continue; }
       const body = await res.json() as { cargoquery?: CargoRow[]; error?: { code?: string } };
       if (body.error) { await sleep(Math.min(60000, 4000 * 2 ** i)); continue; } // ratelimited → wait & retry

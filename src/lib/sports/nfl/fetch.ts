@@ -1,4 +1,5 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const NFL_TEAMS = ["ari","atl","bal","buf","car","chi","cin","cle","dal","den","det","gb","hou","ind","jax","kc","lv","lac","lar","mia","min","ne","no","nyg","nyj","phi","pit","sf","sea","tb","ten","wsh"];
@@ -8,7 +9,7 @@ export async function fetchTeamSchedule(teamAbbr: string, season: number): Promi
   for (const seasontype of [2, 3]) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${teamAbbr}/schedule?season=${season}&seasontype=${seasontype}`;
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
       if (!res.ok) continue;
       const body = await res.json() as { events?: Array<{ id?: string }> };
       for (const e of body.events ?? []) if (e.id) ids.add(e.id);
@@ -20,7 +21,7 @@ export async function fetchTeamSchedule(teamAbbr: string, season: number): Promi
 async function fetchBoxScorePlayers(eventId: string): Promise<PlayerRef[]> {
   const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=${eventId}`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
     const body = await res.json() as { boxscore?: { players?: Array<{ team?: { abbreviation?: string }; statistics?: Array<{ athletes?: Array<{ athlete?: { id?: string; displayName?: string } }> }> }> } };
     const out: PlayerRef[] = [];
@@ -61,7 +62,7 @@ export async function fetchPlayerGamelog(playerId: string, seasons: number[]): P
   for (const season of seasons) {
     const url = `https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${playerId}/gamelog?season=${season}`;
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
       if (!res.ok) continue;
       const data = await res.json() as { labels?: string[]; seasonTypes?: Array<{ categories?: Array<{ events?: Array<{ eventId: string; stats: string[] }> }> }>; events?: Record<string, { gameDate?: string; atVs?: "@" | "vs"; opponent?: { abbreviation?: string } }> };
       const labels = data.labels ?? [];

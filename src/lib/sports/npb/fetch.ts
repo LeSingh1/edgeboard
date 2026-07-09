@@ -1,4 +1,5 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 // Nippon Professional Baseball. No public JSON API exists, so this scrapes
 // npb.jp's per-game box scores (the official site). Bounded by MAX_GAMES so
@@ -25,7 +26,7 @@ function cellsOf(rowHtml: string): string[] {
 async function fetchText(url: string, attempts = 5): Promise<string | null> {
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
       if (res.ok) return await res.text();
       if (res.status === 404) return null;          // genuine miss — don't retry
       await sleep(Math.min(15000, 800 * 2 ** i));    // 0.8→1.6→3.2→6.4→12.8s

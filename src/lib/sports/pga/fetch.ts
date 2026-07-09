@@ -1,4 +1,5 @@
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -38,7 +39,7 @@ function dateStringForWeeksAgo(weeksAgo: number): string {
 async function fetchTournamentWeek(dateStr: string): Promise<Array<{ eventId: string; eventName: string; competitors: Competitor[] }>> {
   const url = `https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?dates=${dateStr}`;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA } });
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
     if (!res.ok) return [];
     const body = await res.json() as { events?: Array<{ id: string; name?: string; status?: { type?: { name?: string } }; competitions?: Array<{ competitors?: Competitor[] }> }> };
     const out: Array<{ eventId: string; eventName: string; competitors: Competitor[] }> = [];

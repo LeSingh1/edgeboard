@@ -1,5 +1,6 @@
 // src/lib/sports/tennis/fetch.ts
 import type { PlayerRef, RawGame } from "@/lib/sports/types";
+import { fetchWithTimeout } from "@/lib/sports/fetchWithTimeout";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -53,7 +54,7 @@ async function ingestWeek(dateStr: string): Promise<void> {
   for (const tour of ["atp", "wta"] as const) {
     const url = `https://site.api.espn.com/apis/site/v2/sports/tennis/${tour}/scoreboard?dates=${dateStr}`;
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA } });
+      const res = await fetchWithTimeout(url, { headers: { "User-Agent": UA } });
       if (!res.ok) continue;
       const body = await res.json() as {
         events?: Array<{ groupings?: Array<{ competitions?: Competition[] }> }>;
