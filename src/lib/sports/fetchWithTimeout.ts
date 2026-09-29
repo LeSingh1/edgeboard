@@ -4,10 +4,22 @@
 // while holding the training lock, so nothing retrained and every model went
 // stale). AbortSignal.timeout aborts the request after `ms`, turning an infinite
 // hang into a normal error the caller's try/catch skips over.
+//
+// EDGEBOARD_FETCH_UA: when set, replaces whatever User-Agent the caller sent.
+// ESPN's site.api.espn.com answers 403 to a spoofed desktop-Chrome UA coming
+// from a datacenter IP (GitHub Actions) but 200 to an honest client UA, so the
+// cloud retrain sets this; on the Mac it's unset and nothing changes.
 export function fetchWithTimeout(
   url: string,
   init?: RequestInit,
   ms = 20_000,
 ): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  const ua = process.env.EDGEBOARD_FETCH_UA;
+  let next = init;
+  if (ua) {
+    const headers = new Headers(init?.headers);
+    headers.set("User-Agent", ua);
+    next = { ...init, headers };
+  }
+  return fetch(url, { ...next, signal: AbortSignal.timeout(ms) });
 }
