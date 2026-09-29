@@ -14,16 +14,12 @@ jobs:
       - run: npm ci
       - name: Probe
         run: |
-          for u in \
-            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard" \
-            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/buf/schedule?season=2026&seasontype=2" \
-            "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/3918298/gamelog?season=2026" \
-            "https://statsapi.mlb.com/api/v1/teams?sportId=1"; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" "$u" || echo ERR)
-            echo "::notice title=probe $code::$u"
+          for ua in "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" "edgeboard-trainer (github.com/LeSingh1/edgeboard)"; do
+            for u in \
+              "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/buf/schedule?season=2026&seasontype=2" \
+              "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard" \
+              "https://site.web.api.espn.com/apis/common/v3/search?query=josh%20allen"; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -A "$ua" "$u" || echo ERR)
+              echo "::notice title=probe $code ${ua:0:12}::$u"
+            done
           done
-      - name: Train pga (fast sport)
-        run: |
-          timeout 600 npx tsx scripts/train-all.ts pga > t.log 2>&1 || true
-          grep -o '"error": "[^"]*"' t.log | head -3 | while read -r l; do echo "::error title=pga::$l"; done
-          head -c 3000 t.log | tr '\n' ' ' | fold -w 900 | head -3 | while read -r l; do echo "::warning title=pga log::$l"; done
