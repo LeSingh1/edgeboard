@@ -66,8 +66,26 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Probe data sources
+        run: |
+          for u in \
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard" \
+            "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/3918298/gamelog?season=2026" \
+            "https://statsapi.mlb.com/api/v1/teams?sportId=1"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -A "Mozilla/5.0" "$u" || echo ERR)
+            echo "::notice title=probe::$code $u"
+          done
       - name: Train ${{ matrix.sport }}
-        run: npx tsx scripts/train-all.ts ${{ matrix.sport }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/train-all.ts ${{ matrix.sport }} 2>&1 | tee train.log
+      - name: Surface training errors
+        if: failure()
+        run: |
+          grep -o '"error": "[^"]*"' train.log | head -5 | while read -r l; do
+            echo "::error title=${{ matrix.sport }} training::$l"
+          done
+          tail -n 15 train.log | while read -r l; do echo "::warning title=${{ matrix.sport }} log::$l"; done
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
