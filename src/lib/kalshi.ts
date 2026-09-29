@@ -94,6 +94,7 @@ const SERIES_MAP: Record<string, string> = {
 interface KalshiMarketRaw {
   ticker: string;
   yes_sub_title?: string;
+  close_time?: string;
   yes_bid_dollars?: string | number;
   yes_ask_dollars?: string | number;
   no_bid_dollars?: string | number;
@@ -156,7 +157,8 @@ async function fetchSeriesMarkets(series: string): Promise<KalshiMarketRaw[]> {
 function parsePlayerAndThreshold(subtitle: string | undefined): { name: string; threshold: number } | null {
   if (!subtitle) return null;
   // "Naz Hillmon: 10+" → { name: "Naz Hillmon", threshold: 10 }
-  const m = subtitle.match(/^(.+?):\s*(\d+)\+\s*$/);
+  // Newer series append the stat: "Josh Allen: 250+ Passing Yards".
+  const m = subtitle.match(/^(.+?):\s*(\d+)\+(?:\s.*)?$/);
   if (!m) return null;
   const n = m[1];
   const t = Number(m[2]);
@@ -196,6 +198,23 @@ export async function kalshiSignalFor(prop: {
 }): Promise<KalshiSignal | null> {
   const series = SERIES_MAP[`${prop.sport.toUpperCase()}|${prop.statType}`];
   if (!series) return null;
+  return kalshiSignalForSeries(series, prop.playerName, prop.line);
+}
+
+/**
+ * Same resolution as `kalshiSignalFor`, but against an explicit series ticker
+ * (used by the Line Betting tab, which discovers series dynamically).
+ * `gameTime` (ISO), when given, drops markets whose close time is more than
+ * ~30h away from the game — keeps next week's ladder from answering today's prop.
+ */
+export async function kalshiSignalForSeries(
+  series: string,
+  playerName: string,
+  line: number,
+  gameTime?: string,
+): Promise<KalshiSignal | null> {
+  const prop = { playerName, line };
+  const gameMs = gameTime ? new Date(gameTime).getTime() : NaN;
   const target = Number.isInteger(prop.line) ? prop.line + 1 : Math.ceil(prop.line);
   const markets = await fetchSeriesMarkets(series);
   if (markets.length === 0) return null;
@@ -205,6 +224,10 @@ export async function kalshiSignalFor(prop: {
     const parsed = parsePlayerAndThreshold(m.yes_sub_title);
     if (!parsed) continue;
     if (normName(parsed.name) !== targetName) continue;
+    if (Number.isFinite(gameMs) && m.close_time) {
+      const closeMs = new Date(m.close_time).getTime();
+      if (Number.isFinite(closeMs) && Math.abs(closeMs - gameMs) > 30 * 3_600_000) continue;
+    }
     playerMarkets.push({ m, threshold: parsed.threshold });
   }
   if (playerMarkets.length === 0) return null;
@@ -261,6 +284,41 @@ export async function kalshiSignalFor(prop: {
     confidence,
     spread,
   };
+}
+
+/** Kalshi series metadata, as returned by GET /series. */
+export interface KalshiSeriesInfo {
+  ticker: string;
+  title: string;
+}
+
+let seriesCache: { ts: number; series: KalshiSeriesInfo[] } | null = null;
+
+/**
+ * List Kalshi's sports series (cached 6h). Used to discover player-prop
+ * ladders beyond the hard-coded SERIES_MAP — Kalshi keeps adding them
+ * (e.g. KXNFLREC, KXNFLPASSATT). Returns [] on any failure.
+ */
+export async function listKalshiSportsSeries(): Promise<KalshiSeriesInfo[]> {
+  if (seriesCache && Date.now() - seriesCache.ts < 6 * 3_600_000) return seriesCache.series;
+  const path = `/trade-api/v2/series?category=Sports`;
+  try {
+    const res = await fetch(`https://api.elections.kalshi.com${path}`, {
+      headers: { Accept: "application/json", ...kalshiAuthHeaders("GET", path) },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as { series?: Array<{ ticker?: string; title?: string }> };
+    const series = (data.series ?? [])
+      .filter((x): x is { ticker: string; title: string } => typeof x.ticker === "string" && typeof x.title === "string")
+      .map((x) => ({ ticker: x.ticker, title: x.title }));
+    seriesCache = { ts: Date.now(), series };
+    return series;
+  } catch {
+    seriesCache = { ts: Date.now() - 5.5 * 3_600_000, series: [] }; // retry in ~30 min
+    return [];
+  }
 }
 
 /**

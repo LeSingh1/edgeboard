@@ -53,3 +53,4 @@ data/training/meta/
 
 # Personal handoff notes — may reference secrets / API keys. Never commit.
 docs/HANDOFF.md
+!.env.example

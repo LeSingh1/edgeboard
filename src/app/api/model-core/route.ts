@@ -189,10 +189,10 @@ export async function GET() {
     return new Date(x.lastTrained) > new Date(acc) ? x.lastTrained : acc;
   }, null);
 
-  // Daily retrain cadence: even calendar day = TRAIN on today's games,
-  // odd day = hold out today as a live TEST (the /loop the user set up).
+  // Daily retrain cadence (scripts/daily-cycle.ts): retrain every day; odd
+  // calendar days also run the walk-forward backtest + outcome learning.
   const day = new Date().getDate();
-  const todaysMode = day % 2 === 0 ? "train" : "test";
+  const todaysMode = day % 2 === 0 ? "train" : "train+test";
 
   // "Learning now" must be HONEST: only true when a real process is alive AND
   // its heartbeat is fresh. A stale currentRun.json (process died or finished

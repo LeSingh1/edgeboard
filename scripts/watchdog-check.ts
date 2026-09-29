@@ -87,8 +87,8 @@ async function maybeRestartTraining(reason: string): Promise<string | null> {
   }
 
   const logFd = openSync(join(META, "manual-v2-run.log"), "a");
-  // Spawn the daily cycle (not train-all directly) so a catch-up run honors the
-  // odd/even train-vs-test mode for the day it fires on.
+  // Spawn the daily cycle (not train-all directly) so a catch-up run also does
+  // the odd-day out-of-sample eval when it fires on one.
   const child = spawn("npx", ["tsx", "scripts/daily-cycle.ts"], {
     detached: true,
     stdio: ["ignore", logFd, logFd],

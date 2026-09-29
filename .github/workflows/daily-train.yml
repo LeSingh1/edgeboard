@@ -1,0 +1,114 @@
+# Retrains every EdgeBoard sport model once a day on GitHub's servers and
+# commits the fresh calibration artifacts back to main — so the models stay
+# current through yesterday's games even when the Mac (launchd job) is asleep.
+#
+# Each sport trains in its own job (up to ~6h each, in parallel), so one slow
+# data source can't starve the others. A sport that fails simply keeps its
+# previous artifact (deploys are atomic + champion-challenger gated).
+#
+# Triggers:
+#   - daily at 10:07 UTC (3:07 AM Pacific, just before the Mac's 3:15 job)
+#   - manually: Actions → "Daily model retrain" → Run workflow
+#   - automatically once when this file changes (catch-up run)
+
+name: Daily model retrain
+
+on:
+  schedule:
+    - cron: "7 10 * * *"
+  workflow_dispatch:
+    inputs:
+      sports:
+        description: "Comma-separated sport keys to train (blank = all)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths: [".github/workflows/daily-train.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-train
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      sports: ${{ steps.pick.outputs.sports }}
+    steps:
+      - id: pick
+        run: |
+          ALL='["nba","wnba","mlb","nfl","nhl","soccer","tennis","pga","afl","sacb","ncaaf","lol"]'
+          if [ -n "${{ github.event.inputs.sports }}" ]; then
+            ALL=$(echo "${{ github.event.inputs.sports }}" | jq -Rc 'split(",") | map(gsub("\\s";"") | ascii_downcase) | map(select(length>0))')
+          fi
+          echo "sports=$ALL" >> "$GITHUB_OUTPUT"
+
+  train:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        sport: ${{ fromJson(needs.plan.outputs.sports) }}
+    env:
+      NODE_OPTIONS: --max-old-space-size=12288
+      TZ: America/Los_Angeles
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Train ${{ matrix.sport }}
+        run: npx tsx scripts/train-all.ts ${{ matrix.sport }}
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ matrix.sport }}
+          path: data/training/artifacts/${{ matrix.sport }}/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  commit:
+    needs: train
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: model-*
+          path: incoming
+      - name: Copy fresh artifacts into place
+        run: |
+          shopt -s nullglob
+          for d in incoming/model-*; do
+            sport="${d#incoming/model-}"
+            [ -f "$d/metadata.json" ] || continue
+            mkdir -p "data/training/artifacts/$sport"
+            cp -f "$d"/*.json "data/training/artifacts/$sport/"
+            echo "updated $sport: $(jq -r .trainedAt "$d/metadata.json")"
+          done
+      - name: Commit and push
+        run: |
+          git config user.name "edgeboard-trainer"
+          git config user.email "edgeboard-trainer@users.noreply.github.com"
+          git add data/training/artifacts
+          if git diff --cached --quiet; then
+            echo "No artifact changes."
+            exit 0
+          fi
+          git commit -m "chore(models): daily retrain $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
