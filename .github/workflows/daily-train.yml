@@ -3,13 +3,15 @@
 # current through yesterday's games even when the Mac (launchd job) is asleep.
 #
 # Each sport trains in its own job (up to ~6h each, in parallel), so one slow
-# data source can't starve the others. A sport that fails simply keeps its
-# previous artifact (deploys are atomic + champion-challenger gated).
+# data source can't starve the others. A sport that fails (or whose new model
+# loses the champion-challenger check) simply keeps its current artifact.
 #
 # Triggers:
 #   - daily at 10:07 UTC (3:07 AM Pacific, just before the Mac's 3:15 job)
 #   - manually: Actions → "Daily model retrain" → Run workflow
-#   - automatically once when this file changes (catch-up run)
+#       sports   = only retrain these (e.g. "nfl,nba")
+#       from_run = skip training and just publish the models an earlier run
+#                  produced (use when a run trained fine but failed to commit)
 
 name: Daily model retrain
 
@@ -22,12 +24,14 @@ on:
         description: "Comma-separated sport keys to train (blank = all)"
         required: false
         default: ""
-  push:
-    branches: [main]
-    paths: [".github/workflows/daily-train.yml"]
+      from_run:
+        description: "Publish artifacts from this earlier run ID instead of training"
+        required: false
+        default: ""
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: daily-model-retrain
@@ -49,6 +53,7 @@ jobs:
 
   train:
     needs: plan
+    if: github.event.inputs.from_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -79,8 +84,10 @@ jobs:
             echo "::error title=${{ matrix.sport }} training::$l"
           done
           tail -n 15 train.log | while read -r l; do echo "::warning title=${{ matrix.sport }} log::$l"; done
+      # Only a sport that trained successfully uploads. A failed sport's folder
+      # still holds the checked-out (older) model, which must never be published.
       - name: Upload artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: model-${{ matrix.sport }}
@@ -89,37 +96,65 @@ jobs:
           retention-days: 7
 
   commit:
-    needs: train
-    if: always()
+    needs: [plan, train]
+    if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      # Always start from the LATEST main (not the SHA this run started on), so
+      # another run's commit landing in between can't cause a rebase conflict.
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+        with:
+          ref: main
+      - name: Download this run's models
+        if: github.event.inputs.from_run == ''
+        uses: actions/download-artifact@v4
         with:
           pattern: model-*
           path: incoming
-      - name: Copy fresh artifacts into place
+      - name: Download models from run ${{ github.event.inputs.from_run }}
+        if: github.event.inputs.from_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: model-*
+          path: incoming
+          run-id: ${{ github.event.inputs.from_run }}
+          github-token: ${{ github.token }}
+      - name: Commit and push (newer models only)
         run: |
           shopt -s nullglob
-          for d in incoming/model-*; do
-            sport="${d#incoming/model-}"
-            [ -f "$d/metadata.json" ] || continue
-            mkdir -p "data/training/artifacts/$sport"
-            cp -f "$d"/*.json "data/training/artifacts/$sport/"
-            echo "updated $sport: $(jq -r .trainedAt "$d/metadata.json")"
-          done
-      - name: Commit and push
-        run: |
           git config user.name "edgeboard-trainer"
           git config user.email "edgeboard-trainer@users.noreply.github.com"
-          git add data/training/artifacts
-          if git diff --cached --quiet; then
-            echo "No artifact changes."
-            exit 0
-          fi
-          git commit -m "chore(models): daily retrain $(date -u +%Y-%m-%d)"
-          for i in 1 2 3; do
-            git pull --rebase origin main && git push origin HEAD:main && exit 0
-            sleep 5
+
+          # Copy each incoming sport only if it was trained AFTER the one on main.
+          apply() {
+            local n=0
+            for d in incoming/model-*; do
+              sport="${d#incoming/model-}"
+              [ -f "$d/metadata.json" ] || continue
+              new=$(jq -r '.trainedAt // ""' "$d/metadata.json")
+              cur=$(jq -r '.trainedAt // ""' "data/training/artifacts/$sport/metadata.json" 2>/dev/null || echo "")
+              if [[ -n "$new" && "$new" > "$cur" ]]; then
+                mkdir -p "data/training/artifacts/$sport"
+                cp -f "$d"/*.json "data/training/artifacts/$sport/"
+                echo "updated $sport: $cur -> $new"
+                n=$((n+1))
+              else
+                echo "kept $sport (main has $cur, incoming $new)"
+              fi
+            done
+          }
+
+          for i in 1 2 3 4; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            apply
+            git add data/training/artifacts
+            if git diff --cached --quiet; then
+              echo "No newer models to publish."
+              exit 0
+            fi
+            git commit -q -m "chore(models): daily retrain $(date -u +%Y-%m-%d)"
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((i * 5))
           done
           exit 1

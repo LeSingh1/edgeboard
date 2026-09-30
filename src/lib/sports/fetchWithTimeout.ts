@@ -5,10 +5,12 @@
 // stale). AbortSignal.timeout aborts the request after `ms`, turning an infinite
 // hang into a normal error the caller's try/catch skips over.
 //
-// EDGEBOARD_FETCH_UA: when set, replaces whatever User-Agent the caller sent.
-// ESPN's site.api.espn.com answers 403 to a spoofed desktop-Chrome UA coming
-// from a datacenter IP (GitHub Actions) but 200 to an honest client UA, so the
-// cloud retrain sets this; on the Mac it's unset and nothing changes.
+// EDGEBOARD_FETCH_UA: when set, replaces a browser-style ("Mozilla/…") or
+// missing User-Agent. ESPN's site.api.espn.com answers 403 to a spoofed
+// desktop-Chrome UA coming from a datacenter IP (GitHub Actions) but 200 to an
+// honest client UA, so the cloud retrain sets this; on the Mac it's unset and
+// nothing changes. Callers that already send an honest UA (e.g. the Leaguepedia
+// client, whose API policy asks for contact info) keep their own.
 export function fetchWithTimeout(
   url: string,
   init?: RequestInit,
@@ -18,8 +20,11 @@ export function fetchWithTimeout(
   let next = init;
   if (ua) {
     const headers = new Headers(init?.headers);
-    headers.set("User-Agent", ua);
-    next = { ...init, headers };
+    const current = headers.get("User-Agent");
+    if (!current || current.startsWith("Mozilla/")) {
+      headers.set("User-Agent", ua);
+      next = { ...init, headers };
+    }
   }
   return fetch(url, { ...next, signal: AbortSignal.timeout(ms) });
 }
