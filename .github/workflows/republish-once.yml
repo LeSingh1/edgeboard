@@ -1,0 +1,64 @@
+# One-off (delete after use): publish the models run 36642344935 trained.
+name: Republish models (one-off)
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/republish-once.yml"]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: daily-model-retrain
+  cancel-in-progress: false
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: model-*
+          path: incoming
+          run-id: 36642344935
+          github-token: ${{ github.token }}
+      - name: Commit and push (newer models only)
+        run: |
+          shopt -s nullglob
+          git config user.name "edgeboard-trainer"
+          git config user.email "edgeboard-trainer@users.noreply.github.com"
+
+          # Copy each incoming sport only if it was trained AFTER the one on main.
+          apply() {
+            local n=0
+            for d in incoming/model-*; do
+              sport="${d#incoming/model-}"
+              [ -f "$d/metadata.json" ] || continue
+              new=$(jq -r '.trainedAt // ""' "$d/metadata.json")
+              cur=$(jq -r '.trainedAt // ""' "data/training/artifacts/$sport/metadata.json" 2>/dev/null || echo "")
+              if [[ -n "$new" && "$new" > "$cur" ]]; then
+                mkdir -p "data/training/artifacts/$sport"
+                cp -f "$d"/*.json "data/training/artifacts/$sport/"
+                echo "updated $sport: $cur -> $new"
+                n=$((n+1))
+              else
+                echo "kept $sport (main has $cur, incoming $new)"
+              fi
+            done
+          }
+
+          for i in 1 2 3 4; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            apply
+            git add data/training/artifacts
+            if git diff --cached --quiet; then
+              echo "No newer models to publish."
+              exit 0
+            fi
+            git commit -q -m "chore(models): daily retrain $(date -u +%Y-%m-%d)"
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((i * 5))
+          done
+          exit 1
