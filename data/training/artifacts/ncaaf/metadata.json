@@ -1,15 +1,15 @@
 {
-  "trainedAt": "2026-11-24T22:43:45.270Z",
-  "sampleSize": 7413960,
+  "trainedAt": "2026-11-25T22:55:05.948Z",
+  "sampleSize": 7436559,
   "version": "training-v2",
-  "trainSampleSize": 5753414,
-  "testSampleSize": 1660546,
+  "trainSampleSize": 5771456,
+  "testSampleSize": 1665103,
   "testMetrics": {
-    "sampleSize": 1660546,
+    "sampleSize": 1665103,
     "bucketsEvaluated": 5,
-    "logLoss": 0.20038221980974283,
-    "baselineLogLoss": 0.2596553871612645,
-    "brier": 0.05165450040654988,
-    "accuracy": 0.9390989469728631
+    "logLoss": 0.20035951420546536,
+    "baselineLogLoss": 0.2596444774955479,
+    "brier": 0.05164899737379894,
+    "accuracy": 0.939111274197452
   }
 }
